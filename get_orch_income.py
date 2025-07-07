@@ -5,12 +5,6 @@ Subgraph Improvements:
     - Add rewardValueUSD field to rewardEvents query to avoid fetching prices.
 
 TODO:
-    - Simplify get all gas fees for wallet.
-    - Add LPT token transfer events pagination.
-    - Add ETH token transfer events pagination.
-    - Unbond transactions.
-    - Withdraw transactions.
-    - Withdraw ETH transactions.
     - Add compounding rewards.
 """
 
@@ -31,6 +25,7 @@ from tenacity import (
 import requests
 from tabulate import tabulate
 from tqdm import tqdm
+tqdm.pandas()
 
 GRAPH_TOKEN = os.getenv("GRAPH_AUTH_TOKEN")
 ARBISCAN_API_KEY_TOKEN = os.getenv("ARBISCAN_API_KEY_TOKEN")
@@ -177,6 +172,89 @@ query TransferBondEvents(
 }
 """
 )
+
+
+def filter_transactions_by_sender(
+    df: pd.DataFrame, wallet_address: str
+) -> pd.DataFrame:
+    """Filter transactions where the wallet address is the sender.
+
+    Args:
+        df: A Pandas DataFrame containing transaction data.
+        wallet_address: The wallet address to filter transactions.
+
+    Returns:
+        A DataFrame of filtered transactions where the wallet is the sender.
+    """
+    return df[df["from"].str.lower() == wallet_address.lower()]
+
+
+def add_gas_cost_information(
+    df: pd.DataFrame, wallet_address: str, currency: str = "EUR"
+) -> pd.DataFrame:
+    """Add gas cost information (in ETH and specified currency) as columns to the DataFrame.
+
+    Args:
+        df: A Pandas DataFrame containing transaction data with 'gasPrice', 'gasUsed', and 'timestamp'.
+        wallet_address: The wallet address to filter transactions.
+        currency: The target currency for conversion (default: EUR).
+
+    Returns:
+        The same DataFrame with additional columns for gas costs in ETH and the specified currency.
+    """
+    # Filter transactions where the wallet is the sender
+    filtered_df = df[df["from"].str.lower() == wallet_address.lower()].copy()
+
+    # Calculate gas cost in ETH
+    filtered_df["gas cost (ETH)"] = (
+        filtered_df["gasPrice"].astype(float) * filtered_df["gasUsed"].astype(float)
+    ) / 10**18
+
+    # Calculate gas cost in the specified currency
+    def calculate_gas_cost_currency(row):
+        try:
+            eth_price = fetch_crypto_price("ETH", currency, int(row["timestamp"]))
+            return row["gas cost (ETH)"] * eth_price
+        except Exception as e:
+            print(f"Error fetching ETH price for transaction {row['transaction']}: {e}")
+            return 0
+
+    filtered_df[f"gas cost ({currency})"] = filtered_df.apply(
+        calculate_gas_cost_currency, axis=1
+    )
+
+    return filtered_df
+
+
+def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.DataFrame:
+    """Add gas cost information (in ETH and specified currency) to a DataFrame.
+
+    Args:
+        df (pd.DataFrame): A Pandas DataFrame containing transaction data with columns
+            'gasPrice', 'gasUsed', and 'timestamp'.
+        currency (str): The target currency for conversion (default: "EUR").
+
+    Returns:
+        pd.DataFrame: The updated DataFrame with gas cost information added.
+    """
+
+    def calculate_gas_cost_currency(row):
+        """Calculate gas cost in the specified currency."""
+        try:
+            eth_price = fetch_crypto_price("ETH", currency, int(row["timeStamp"]))
+            return row["gas cost (ETH)"] * eth_price
+        except Exception as e:
+            print(f"Error fetching ETH price for transaction {row['hash']}: {e}")
+            return 0
+
+    df["gas cost (ETH)"] = (
+        df["gasPrice"].astype(float) * df["gasUsed"].astype(float)
+    ) / 10**18
+    df[f"gas cost ({currency})"] = df.progress_apply(
+        calculate_gas_cost_currency, axis=1
+    )
+
+    return df
 
 
 def human_to_unix_time(human_time: str, time_format: str = "%Y-%m-%d %H:%M:%S") -> int:
@@ -514,10 +592,10 @@ def fetch_arb_transactions_with_timestamps(
     return fetch_arb_transactions(address, start_block, end_block, sort)
 
 
-def fetch_arb_lpt_transactions(
+def fetch_arb_token_transactions(
     address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
 ) -> list:
-    """Fetch LPT token transactions for a given address on the Arbitrum (Layer 2) chain
+    """Fetch token transactions for a given address on the Arbitrum (Layer 2) chain
     using the Arbiscan API, with pagination.
 
     Args:
@@ -527,7 +605,7 @@ def fetch_arb_lpt_transactions(
         sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
 
     Returns:
-        list: A list of LPT token transactions.
+        list: A list of  token transactions.
     """
     all_transactions = []
     processed_hashes = set()
@@ -539,7 +617,6 @@ def fetch_arb_lpt_transactions(
             "chainid": 42161,
             "module": "account",
             "action": "tokentx",
-            "contractaddress": "0x289ba1701C2F088cf0faf8B3705246331cB8A839",
             "address": address,
             "startblock": current_start_block,
             "endblock": end_block,
@@ -576,10 +653,10 @@ def fetch_arb_lpt_transactions(
     return all_transactions
 
 
-def fetch_lpt_transactions_with_timestamps(
+def fetch_arb_token_transactions_with_timestamps(
     address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
 ) -> list:
-    """Fetch LPT token transactions for a given address on the Arbitrum (Layer 2) chain
+    """Fetch token transactions for a given address on the Arbitrum (Layer 2) chain
     using timestamps.
 
     Args:
@@ -588,11 +665,126 @@ def fetch_lpt_transactions_with_timestamps(
         end_timestamp: The end timestamp in Unix format.
 
     Returns:
-        A list of LPT token transactions within the specified time range.
+        A list of token transactions within the specified time range.
     """
     start_block = get_block_number_by_timestamp(start_timestamp)
     end_block = get_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_lpt_transactions(address, start_block, end_block, sort)
+    return fetch_arb_token_transactions(address, start_block, end_block, sort)
+
+
+def fetch_arb_internal_transactions(
+    address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
+) -> list:
+    """Fetch internal transactions for a given address on the Arbitrum (Layer 2) chain
+    using the Arbiscan API, with pagination.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number (default: 0).
+        end_block: The ending block number (default: 99999999).
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        list: A list of internal transactions.
+    """
+    all_transactions = []
+    processed_hashes = set()
+    max_records = 1000  # Free tier limit
+    current_start_block = start_block
+
+    while current_start_block <= end_block:
+        params = {
+            "chainid": 42161,
+            "module": "account",
+            "action": "txlistinternal",
+            "address": address,
+            "startblock": current_start_block,
+            "endblock": end_block,
+            "page": 1,
+            "offset": max_records,
+            "sort": sort,
+            "apikey": ARBISCAN_API_KEY_TOKEN,
+        }
+
+        response = requests.get(ARBISCAN_ENDPOINT, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        if data["status"] == "1":
+            transactions = data["result"]
+
+            # Filter out duplicate transactions and add to final list.
+            new_transactions = [
+                tx for tx in transactions if tx["hash"] not in processed_hashes
+            ]
+            all_transactions.extend(new_transactions)
+            processed_hashes.update(tx["hash"] for tx in new_transactions)
+
+            # If limit hit on Arbitrum chain, set next start_block to last block - 1.
+            if len(transactions) == max_records:
+                last_block_number = int(transactions[-1]["blockNumber"])
+                current_start_block = last_block_number - 1
+            else:
+                break
+        elif data["status"] == "0" and data["message"] == "No transactions found":
+            break
+        else:
+            raise Exception(f"Error fetching internal transactions: {data['message']}")
+    return all_transactions
+
+
+def fetch_arb_internal_transactions_with_timestamps(
+    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
+) -> list:
+    """Fetch internal transactions for a given address on the Arbitrum (Layer 2) chain
+    using timestamps.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+
+    Returns:
+        A list of internal transactions within the specified time range.
+    """
+    start_block = get_block_number_by_timestamp(start_timestamp)
+    end_block = get_block_number_by_timestamp(end_timestamp)
+    return fetch_arb_internal_transactions(address, start_block, end_block, sort)
+
+
+def fetch_all_transactions(
+    address: str, start_timestamp: int, end_timestamp: int
+) -> pd.DataFrame:
+    """Fetch all normal, internal, and token transactions for a given address and store
+    them in a DataFrame.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+
+    Returns:
+        A Pandas DataFrame containing all transactions.
+    """
+    print("Fetch normal transactions...")
+    normal_transactions = fetch_arb_transactions_with_timestamps(
+        address, start_timestamp, end_timestamp, sort="asc"
+    )
+
+    print("Fetch token transactions...")
+    token_transactions = fetch_arb_token_transactions_with_timestamps(
+        address, start_timestamp, end_timestamp, sort="asc"
+    )
+
+    print("Fetch internal transactions...")
+    internal_transactions = fetch_arb_internal_transactions_with_timestamps(
+        address, start_timestamp, end_timestamp, sort="asc"
+    )
+
+    all_transactions = normal_transactions + token_transactions + internal_transactions
+    df = pd.DataFrame(all_transactions)
+
+    return df
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -915,7 +1107,6 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         print(f"Found {len(reward_events)} reward events.")
-
     print("Processing reward calls...")
     reward_data = process_reward_events(reward_events, currency)
 
@@ -925,7 +1116,6 @@ if __name__ == "__main__":
         print("No fee events found for the specified orchestrator and time range.")
     else:
         print(f"Found {len(fee_events)} fee events.")
-
     print("Processing fee events...")
     fee_data = process_fee_events(fee_events, currency)
 
@@ -937,42 +1127,33 @@ if __name__ == "__main__":
         print("No transfer bond events found for the specified orchestrator.")
     else:
         print(f"Found {len(transfer_bond_events)} transfer bond events.")
-
     print("Processing transfer bond events...")
     transfer_bond_data = process_transfer_bond_events(transfer_bond_events, currency)
 
-    print("Fetching LPT token transactions...")
-    lpt_transactions = fetch_lpt_transactions_with_timestamps(
-        orchestrator, start_timestamp, end_timestamp, sort="asc"
+    print("Fetch all wallet transactions...")
+    transactions_df = fetch_all_transactions(
+        orchestrator, start_timestamp, end_timestamp
     )
-    if not lpt_transactions:
-        print("No LPT token transactions found for the specified orchestrator.")
-        lpt_transaction_data = pd.DataFrame()
-    else:
-        print(f"Found {len(lpt_transactions)} LPT token transactions.")
-        print("Processing LPT token transactions...")
-        lpt_transaction_data = process_lpt_transactions(
-            lpt_transactions, currency, orchestrator
-        )
 
-    print("Fetching ETH transactions...")
-    eth_transactions = fetch_arb_transactions_with_timestamps(
-        orchestrator, start_timestamp, end_timestamp, sort="asc"
+    print("Filter transactions by sending address...")
+    filtered_transactions_df = filter_transactions_by_sender(
+        transactions_df, orchestrator
     )
-    if not eth_transactions:
-        print("No ETH transactions found for the specified orchestrator.")
-        eth_transaction_data = pd.DataFrame()
-    else:
-        print(f"Found {len(eth_transactions)} ETH transactions.")
-        print("Processing ETH transactions...")
-        eth_transaction_data = process_eth_transactions(
-            eth_transactions, currency, orchestrator
-        )
+
+    print("Add gas cost information to transactions")
+    filtered_transactions_df = add_gas_cost_information(
+        filtered_transactions_df, currency
+    )
+
+    print("Calculate total gas fees paid by orchestrator...")
+    total_gas_cost = filtered_transactions_df["gas cost (ETH)"].sum()
+    total_gas_cost_eur = filtered_transactions_df[f"gas cost ({currency})"].sum()
 
     combined_data = pd.concat(
         [
             reward_data,
             fee_data,
+            transfer_bond_data,
         ]
     )
 
@@ -981,7 +1162,6 @@ if __name__ == "__main__":
     total_orchestrator_reward_value = reward_data[f"value ({currency})"].sum()
     total_orchestrator_fees = fee_data["amount"].sum()
     total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
-    total_gas_cost = combined_data[f"gas cost ({currency})"].sum()
     overview_table = [
         ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.3f} LPT"],
         [
@@ -993,7 +1173,8 @@ if __name__ == "__main__":
             f"Total Orchestrator Fees ({currency})",
             f"{total_orchestrator_fees_value:.3f} {currency}",
         ],
-        [f"Total Gas Cost ({currency})", f"{total_gas_cost:.3f} {currency}"],
+        ["Total Gas Cost (ETH)", f"{total_gas_cost:.3f} ETH"],
+        [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.3f} {currency}"],
     ]
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
