@@ -189,43 +189,6 @@ def filter_transactions_by_sender(
     return df[df["from"].str.lower() == wallet_address.lower()]
 
 
-def add_gas_cost_information(
-    df: pd.DataFrame, wallet_address: str, currency: str = "EUR"
-) -> pd.DataFrame:
-    """Add gas cost information (in ETH and specified currency) as columns to the DataFrame.
-
-    Args:
-        df: A Pandas DataFrame containing transaction data with 'gasPrice', 'gasUsed', and 'timestamp'.
-        wallet_address: The wallet address to filter transactions.
-        currency: The target currency for conversion (default: EUR).
-
-    Returns:
-        The same DataFrame with additional columns for gas costs in ETH and the specified currency.
-    """
-    # Filter transactions where the wallet is the sender
-    filtered_df = df[df["from"].str.lower() == wallet_address.lower()].copy()
-
-    # Calculate gas cost in ETH
-    filtered_df["gas cost (ETH)"] = (
-        filtered_df["gasPrice"].astype(float) * filtered_df["gasUsed"].astype(float)
-    ) / 10**18
-
-    # Calculate gas cost in the specified currency
-    def calculate_gas_cost_currency(row):
-        try:
-            eth_price = fetch_crypto_price("ETH", currency, int(row["timestamp"]))
-            return row["gas cost (ETH)"] * eth_price
-        except Exception as e:
-            print(f"Error fetching ETH price for transaction {row['transaction']}: {e}")
-            return 0
-
-    filtered_df[f"gas cost ({currency})"] = filtered_df.apply(
-        calculate_gas_cost_currency, axis=1
-    )
-
-    return filtered_df
-
-
 def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.DataFrame:
     """Add gas cost information (in ETH and specified currency) to a DataFrame.
 
@@ -291,6 +254,11 @@ def create_arbiscan_url(transaction_id: str) -> str:
     return f"https://arbiscan.io/tx/{transaction_id}"
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
 def get_block_number_by_timestamp(timestamp: int, closest: str = "before") -> int:
     """Fetch the block number for a given timestamp using the Arbiscan API.
 
@@ -511,6 +479,11 @@ def fetch_transfer_bond_events(
     return all_events
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
 def fetch_arb_transactions(
     address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
 ) -> list:
@@ -592,6 +565,11 @@ def fetch_arb_transactions_with_timestamps(
     return fetch_arb_transactions(address, start_block, end_block, sort)
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
 def fetch_arb_token_transactions(
     address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
 ) -> list:
@@ -672,6 +650,11 @@ def fetch_arb_token_transactions_with_timestamps(
     return fetch_arb_token_transactions(address, start_block, end_block, sort)
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
 def fetch_arb_internal_transactions(
     address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
 ) -> list:
@@ -971,122 +954,6 @@ def process_transfer_bond_events(
     return pd.DataFrame(rows)
 
 
-def process_eth_transactions(
-    eth_transactions: list, currency: str, address: str
-) -> pd.DataFrame:
-    """Process ETH transactions and create a DataFrame with only outward transactions.
-
-    Args:
-        eth_transactions: A list of ETH transactions fetched from Arbiscan.
-        currency: The currency for the token values (e.g., "EUR", "USD").
-        address: The address to filter outward transactions.
-
-    Returns:
-        A Pandas DataFrame representing the outward ETH transaction data.
-    """
-    rows = []
-    for tx in tqdm(eth_transactions, desc="Processing ETH transactions", unit="tx"):
-        # Only process outbound ETH transfers.
-        if tx["from"].lower() != address.lower() or float(tx["value"]) == 0.0:
-            continue
-
-        timestamp = datetime.fromtimestamp(int(tx["timeStamp"])).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        transaction = create_arbiscan_url(tx["hash"])
-        from_address = tx["from"]
-        to_address = tx["to"]
-        amount = int(tx["value"]) / 10**18
-        transaction_type = "transfer"
-        transaction_category = "outward"
-        gas_price = int(tx["value"]) / 10**18
-        gas_used = int(tx.get("gasUsed", 0))
-        gas_cost_eth = gas_price * gas_used / 10**9
-
-        try:
-            eth_price = fetch_crypto_price("ETH", currency, int(tx["timeStamp"]))
-        except Exception as e:
-            print(f"Error fetching ETH price for transaction {transaction}: {e}")
-            sys.exit(1)
-
-        gas_cost_currency = gas_cost_eth * eth_price
-        value_currency = amount * eth_price
-
-        rows.append(
-            {
-                "timestamp": timestamp,
-                "transaction": transaction,
-                "transaction type": transaction_type,
-                "transaction category": transaction_category,
-                "from": from_address,
-                "to": to_address,
-                "currency": "ETH",
-                "amount": amount,
-                "gas price (Gwei)": gas_price,
-                "gas used": gas_used,
-                "gas cost (ETH)": gas_cost_eth,
-                f"ETH price ({currency})": eth_price,
-                f"gas cost ({currency})": gas_cost_currency,
-                f"value ({currency})": value_currency,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def process_lpt_transactions(
-    lpt_transactions: list, currency: str, address: str
-) -> pd.DataFrame:
-    """Process LPT token transactions and create a DataFrame with only outward transactions.
-
-    Args:
-        lpt_transactions: A list of LPT token transactions fetched from Arbiscan.
-        currency: The currency for the token values (e.g., "EUR", "USD").
-        address: The address to filter outward transactions.
-
-    Returns:
-        A Pandas DataFrame representing the outward LPT token transaction data.
-    """
-    rows = []
-    for tx in tqdm(lpt_transactions, desc="Processing LPT transactions", unit="tx"):
-        # Only process outward transfers.
-        if tx["from"].lower() != address.lower():
-            continue
-
-        timestamp = datetime.fromtimestamp(int(tx["timeStamp"])).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        transaction = create_arbiscan_url(tx["hash"])
-        from_address = tx["from"]
-        to_address = tx["to"]
-        amount = int(tx["value"]) / 10**18
-        transaction_type = "transfer"
-        transaction_category = "outward"
-
-        try:
-            lpt_price = fetch_crypto_price("LPT", currency, int(tx["timeStamp"]))
-        except Exception as e:
-            print(f"Error fetching LPT price for transaction {transaction}: {e}")
-            sys.exit(1)
-
-        value_currency = amount * lpt_price
-
-        rows.append(
-            {
-                "timestamp": timestamp,
-                "transaction": transaction,
-                "transaction type": transaction_type,
-                "transaction category": transaction_category,
-                "from": from_address,
-                "to": to_address,
-                "currency": "LPT",
-                "amount": amount,
-                f"LPT price ({currency})": lpt_price,
-                f"value ({currency})": value_currency,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
@@ -1163,18 +1030,18 @@ if __name__ == "__main__":
     total_orchestrator_fees = fee_data["amount"].sum()
     total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
     overview_table = [
-        ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.3f} LPT"],
+        ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.4f} LPT"],
         [
             f"Total Orchestrator Reward ({currency})",
-            f"{total_orchestrator_reward_value:.3f} {currency}",
+            f"{total_orchestrator_reward_value:.4f} {currency}",
         ],
-        ["Total Orchestrator Fees (ETH)", f"{total_orchestrator_fees:.3f} ETH"],
+        ["Total Orchestrator Fees (ETH)", f"{total_orchestrator_fees:.4f} ETH"],
         [
             f"Total Orchestrator Fees ({currency})",
-            f"{total_orchestrator_fees_value:.3f} {currency}",
+            f"{total_orchestrator_fees_value:.4f} {currency}",
         ],
-        ["Total Gas Cost (ETH)", f"{total_gas_cost:.3f} ETH"],
-        [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.3f} {currency}"],
+        ["Total Gas Cost (ETH)", f"{total_gas_cost:.4f} ETH"],
+        [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.4f} {currency}"],
     ]
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
