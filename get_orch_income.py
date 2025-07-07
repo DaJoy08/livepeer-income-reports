@@ -25,6 +25,7 @@ from tenacity import (
 import requests
 from tabulate import tabulate
 from tqdm import tqdm
+
 tqdm.pandas()
 
 GRAPH_TOKEN = os.getenv("GRAPH_AUTH_TOKEN")
@@ -555,6 +556,7 @@ def fetch_arb_transactions_with_timestamps(
         address: The wallet address to fetch transactions for.
         start_timestamp: The start timestamp in Unix format.
         end_timestamp: The end timestamp in Unix format.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
 
     Returns:
         A list of ETH transactions on the Arbitrum chain within the specified time
@@ -785,47 +787,30 @@ def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
-        transaction = create_arbiscan_url(event["transaction"]["id"])
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
         pool_reward = float(event["rewardTokens"])
         reward_cut = int(event["round"]["pools"][0]["rewardCut"]) / 10**6
         orchestrator_reward = reward_cut * pool_reward
         transaction_type = "reward cut"
-        gas_price = int(event["transaction"]["gasPrice"])
 
-        try:
-            gas_used = fetch_gas_used_from_rpc(event["transaction"]["id"])
-        except Exception as e:
-            print(f"Error fetching gas used for transaction {transaction}: {e}")
-            sys.exit(1)
-        gas_cost_eth = gas_price * gas_used / 10**18
-
-        try:
-            lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
-            eth_price = fetch_crypto_price("ETH", currency, event["timestamp"])
-        except Exception as e:
-            print(f"Error fetching crypto prices: {e}")
-            sys.exit(1)
-
-        gas_cost_currency = gas_cost_eth * eth_price
+        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        value_currency = orchestrator_reward * lpt_price
 
         rows.append(
             {
                 "timestamp": timestamp,
                 "round": event["round"]["id"],
-                "transaction": transaction,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
                 "transaction type": transaction_type,
                 "transaction category": "inward",
                 "currency": "LPT",
                 "pool reward": pool_reward,
                 "reward cut": reward_cut,
                 "amount": orchestrator_reward,
-                "gas price (Wei)": gas_price,
-                "gas used (Wei)": gas_used,
-                "gas cost (ETH)": gas_cost_eth,
-                f"ETH price ({currency})": eth_price,
                 f"LPT price ({currency})": lpt_price,
-                f"gas cost ({currency})": gas_cost_currency,
-                f"value ({currency})": orchestrator_reward * lpt_price,
+                f"value ({currency})": value_currency,
             }
         )
     return pd.DataFrame(rows)
@@ -846,45 +831,30 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
-        transaction = create_arbiscan_url(event["transaction"]["id"])
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
         face_value = float(event["faceValue"])
         fee_share = int(event["round"]["pools"][0]["feeShare"]) / 10**6
         orch_fee = (1 - fee_share) * face_value
         transaction_type = "fee cut"
-        gas_price = int(event["transaction"]["gasPrice"])
 
-        try:
-            gas_used = fetch_gas_used_from_rpc(event["transaction"]["id"])
-        except Exception as e:
-            print(f"Error fetching gas used for transaction {transaction}: {e}")
-            sys.exit(1)
-        gas_cost_eth = gas_price * gas_used / 10**18
-
-        try:
-            eth_price = fetch_crypto_price("ETH", currency, event["timestamp"])
-        except Exception as e:
-            print(f"Error fetching crypto prices: {e}")
-            sys.exit(1)
-
-        gas_cost_currency = gas_cost_eth * eth_price
+        eth_price = fetch_crypto_price("ETH", currency, event["timestamp"])
+        value_currency = orch_fee * eth_price
 
         rows.append(
             {
                 "timestamp": timestamp,
                 "round": event["round"]["id"],
-                "transaction": transaction,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
                 "transaction type": transaction_type,
                 "transaction category": "inward",
                 "currency": "ETH",
                 "face value": face_value,
                 "fee share": fee_share,
                 "amount": orch_fee,
-                "gas price (Wei)": gas_price,
-                "gas used (Wei)": gas_used,
-                "gas cost (ETH)": gas_cost_eth,
                 f"ETH price ({currency})": eth_price,
-                f"gas cost ({currency})": gas_cost_currency,
-                f"value ({currency})": orch_fee * eth_price,
+                f"value ({currency})": value_currency,
             }
         )
     return pd.DataFrame(rows)
@@ -909,46 +879,29 @@ def process_transfer_bond_events(
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
-        transaction = create_arbiscan_url(event["transaction"]["id"])
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
         amount = float(event["amount"])
         transaction_type = "reward transfer"
         transaction_category = "outward"
-        gas_price = int(event["transaction"]["gasPrice"])
 
-        try:
-            gas_used = fetch_gas_used_from_rpc(event["transaction"]["id"])
-        except Exception as e:
-            print(f"Error fetching gas data for transaction {transaction}: {e}")
-            sys.exit(1)
-        gas_cost_eth = gas_price * gas_used / 10**18
-
-        try:
-            lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
-            eth_price = fetch_crypto_price("ETH", currency, event["timestamp"])
-        except Exception as e:
-            print(f"Error fetching ETH price: {e}")
-            sys.exit(1)
-
-        gas_cost_currency = gas_cost_eth * eth_price
+        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        value_currency = amount * lpt_price
 
         rows.append(
             {
                 "timestamp": timestamp,
                 "round": event["round"]["id"],
-                "transaction": transaction,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
                 "transaction type": transaction_type,
                 "transaction category": transaction_category,
                 "from": event["oldDelegator"]["id"],
                 "to": event["newDelegator"]["id"],
                 "currency": "LPT",
                 "amount": amount,
-                "gas price (Wei)": gas_price,
-                "gas used (Wei)": gas_used,
-                "gas cost (ETH)": gas_cost_eth,
-                f"ETH price ({currency})": eth_price,
                 f"LPT price ({currency})": lpt_price,
-                f"gas cost ({currency})": gas_cost_currency,
-                f"value ({currency})": amount * lpt_price,
+                f"value ({currency})": value_currency,
             }
         )
     return pd.DataFrame(rows)
@@ -969,33 +922,37 @@ if __name__ == "__main__":
 
     print("\nFetching reward call events...")
     reward_events = fetch_reward_events(orchestrator, start_timestamp, end_timestamp)
-    if not reward_events:
-        print("No reward events found for the specified orchestrator and time range.")
-        sys.exit(0)
-    else:
+    if reward_events:
         print(f"Found {len(reward_events)} reward events.")
-    print("Processing reward calls...")
-    reward_data = process_reward_events(reward_events, currency)
+        print("Processing reward calls...")
+        reward_data = process_reward_events(reward_events, currency)
+    else:
+        print("No reward events found for the specified orchestrator and time range.")
+        reward_data = pd.DataFrame()
 
     print("Fetching fee redeem events...")
     fee_events = fetch_fee_events(orchestrator, start_timestamp, end_timestamp)
-    if not fee_events:
-        print("No fee events found for the specified orchestrator and time range.")
-    else:
+    if fee_events:
         print(f"Found {len(fee_events)} fee events.")
-    print("Processing fee events...")
-    fee_data = process_fee_events(fee_events, currency)
+        print("Processing fee events...")
+        fee_data = process_fee_events(fee_events, currency)
+    else:
+        print("No fee events found for the specified orchestrator and time range.")
+        fee_data = pd.DataFrame()
 
     print("Fetching transfer bond events...")
     transfer_bond_events = fetch_transfer_bond_events(
         orchestrator, start_timestamp, end_timestamp
     )
-    if not transfer_bond_events:
-        print("No transfer bond events found for the specified orchestrator.")
-    else:
+    if transfer_bond_events:
         print(f"Found {len(transfer_bond_events)} transfer bond events.")
-    print("Processing transfer bond events...")
-    transfer_bond_data = process_transfer_bond_events(transfer_bond_events, currency)
+        print("Processing transfer bond events...")
+        transfer_bond_data = process_transfer_bond_events(
+            transfer_bond_events, currency
+        )
+    else:
+        print("No transfer bond events found for the specified orchestrator.")
+        transfer_bond_data = pd.DataFrame()
 
     print("Fetch all wallet transactions...")
     transactions_df = fetch_all_transactions(
@@ -1003,18 +960,47 @@ if __name__ == "__main__":
     )
 
     print("Filter transactions by sending address...")
-    filtered_transactions_df = filter_transactions_by_sender(
+    transactions_with_gas_info_df = filter_transactions_by_sender(
         transactions_df, orchestrator
     )
 
     print("Add gas cost information to transactions")
-    filtered_transactions_df = add_gas_cost_information(
-        filtered_transactions_df, currency
+    transactions_with_gas_info_df = add_gas_cost_information(
+        transactions_with_gas_info_df, currency
     )
 
+    # Rename 'hash' column to 'transaction hash' for consistency
+    transactions_with_gas_info_df.rename(columns={"hash": "transaction hash"}, inplace=True)
+
     print("Calculate total gas fees paid by orchestrator...")
-    total_gas_cost = filtered_transactions_df["gas cost (ETH)"].sum()
-    total_gas_cost_eur = filtered_transactions_df[f"gas cost ({currency})"].sum()
+    total_gas_cost = transactions_with_gas_info_df["gas cost (ETH)"].sum()
+    total_gas_cost_eur = transactions_with_gas_info_df[f"gas cost ({currency})"].sum()
+
+    print("Merging gas information into processed data...")
+    if not reward_data.empty:
+        reward_data = reward_data.merge(
+            transactions_with_gas_info_df[
+                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
+            ],
+            on="transaction hash",
+            how="left",
+        )
+    if not fee_data.empty:
+        fee_data = fee_data.merge(
+            transactions_with_gas_info_df[
+                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
+            ],
+            on="transaction hash",
+            how="left",
+        )
+    if not transfer_bond_data.empty:
+        transfer_bond_data = transfer_bond_data.merge(
+            transactions_with_gas_info_df[
+                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
+            ],
+            on="transaction hash",
+            how="left",
+        )
 
     combined_data = pd.concat(
         [
