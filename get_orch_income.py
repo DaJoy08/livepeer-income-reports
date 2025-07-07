@@ -1,10 +1,8 @@
 """Retrieve and export orchestrator income data for tax reporting as a CSV file.
 
-Subgraph Improvements:
-    - Fix gas logic (https://github.com/livepeer/subgraph/pull/164).
-    - Add rewardValueUSD field to rewardEvents query to avoid fetching prices.
 
 TODO:
+    - Add LPT, ETH in out transacftions.
     - Add compounding rewards.
 """
 
@@ -25,6 +23,7 @@ from tenacity import (
 import requests
 from tabulate import tabulate
 from tqdm import tqdm
+from typing import Callable
 
 tqdm.pandas()
 
@@ -907,6 +906,58 @@ def process_transfer_bond_events(
     return pd.DataFrame(rows)
 
 
+def merge_gas_info(
+    data: pd.DataFrame, gas_info_df: pd.DataFrame, currency: str
+) -> pd.DataFrame:
+    """Merge gas cost information into a DataFrame if it's not empty.
+
+    Args:
+        data: A Pandas DataFrame containing transaction data.
+        gas_info_df: A DataFrame containing gas cost information.
+        currency: The currency for the gas cost values (e.g., "EUR", "USD
+
+    Returns:
+        A DataFrame with gas cost information merged, or the original DataFrame if empty.
+    """
+    if not data.empty:
+        return data.merge(
+            gas_info_df[
+                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
+            ],
+            on="transaction hash",
+            how="left",
+        )
+    return data
+
+
+def fetch_and_process_events(
+    fetch_func: Callable[[str, int, int], list],
+    process_func: Callable[[list, str], pd.DataFrame],
+    event_name: str,
+) -> pd.DataFrame:
+    """Fetch and process blockchain events for a given orchestrator and time range.
+
+    Args:
+        fetch_func: A callable function to fetch events. It should accept orchestrator address,
+            start timestamp, and end timestamp as arguments and return a list of events.
+        process_func: A callable function to process the fetched events. It should accept a list
+            of events and a currency string as arguments and return a Pandas DataFrame.
+        event_name: A string representing the name of the event being processed (e.g., "reward events").
+
+    Returns:
+        A Pandas DataFrame containing the processed event data. If no events are found, returns an empty DataFrame.
+    """
+    print(f"\nFetching {event_name}...")
+    events = fetch_func(orchestrator, start_timestamp, end_timestamp)
+    if events:
+        print(f"Found {len(events)} {event_name}.")
+        print(f"Processing {event_name}...")
+        return process_func(events, currency)
+    else:
+        print(f"No {event_name} found for the specified orchestrator and time range.")
+        return pd.DataFrame()
+
+
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
@@ -920,41 +971,17 @@ if __name__ == "__main__":
         sys.exit(1)
     currency = input("Enter currency (default: EUR): ").upper() or "EUR"
 
-    print("\nFetching reward call events...")
-    reward_events = fetch_reward_events(orchestrator, start_timestamp, end_timestamp)
-    if reward_events:
-        print(f"Found {len(reward_events)} reward events.")
-        print("Processing reward calls...")
-        reward_data = process_reward_events(reward_events, currency)
-    else:
-        print("No reward events found for the specified orchestrator and time range.")
-        reward_data = pd.DataFrame()
-
-    print("Fetching fee redeem events...")
-    fee_events = fetch_fee_events(orchestrator, start_timestamp, end_timestamp)
-    if fee_events:
-        print(f"Found {len(fee_events)} fee events.")
-        print("Processing fee events...")
-        fee_data = process_fee_events(fee_events, currency)
-    else:
-        print("No fee events found for the specified orchestrator and time range.")
-        fee_data = pd.DataFrame()
-
-    print("Fetching transfer bond events...")
-    transfer_bond_events = fetch_transfer_bond_events(
-        orchestrator, start_timestamp, end_timestamp
+    reward_data = fetch_and_process_events(
+        fetch_reward_events, process_reward_events, "reward events"
     )
-    if transfer_bond_events:
-        print(f"Found {len(transfer_bond_events)} transfer bond events.")
-        print("Processing transfer bond events...")
-        transfer_bond_data = process_transfer_bond_events(
-            transfer_bond_events, currency
-        )
-    else:
-        print("No transfer bond events found for the specified orchestrator.")
-        transfer_bond_data = pd.DataFrame()
+    fee_data = fetch_and_process_events(
+        fetch_fee_events, process_fee_events, "fee events"
+    )
+    transfer_bond_data = fetch_and_process_events(
+        fetch_transfer_bond_events, process_transfer_bond_events, "transfer bond events"
+    )
 
-    print("Fetch all wallet transactions...")
+    print("\nFetch all wallet transactions...")
     transactions_df = fetch_all_transactions(
         orchestrator, start_timestamp, end_timestamp
     )
@@ -970,45 +997,22 @@ if __name__ == "__main__":
     )
 
     # Rename 'hash' column to 'transaction hash' for consistency
-    transactions_with_gas_info_df.rename(columns={"hash": "transaction hash"}, inplace=True)
+    transactions_with_gas_info_df.rename(
+        columns={"hash": "transaction hash"}, inplace=True
+    )
 
     print("Calculate total gas fees paid by orchestrator...")
     total_gas_cost = transactions_with_gas_info_df["gas cost (ETH)"].sum()
     total_gas_cost_eur = transactions_with_gas_info_df[f"gas cost ({currency})"].sum()
 
     print("Merging gas information into processed data...")
-    if not reward_data.empty:
-        reward_data = reward_data.merge(
-            transactions_with_gas_info_df[
-                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
-            ],
-            on="transaction hash",
-            how="left",
-        )
-    if not fee_data.empty:
-        fee_data = fee_data.merge(
-            transactions_with_gas_info_df[
-                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
-            ],
-            on="transaction hash",
-            how="left",
-        )
-    if not transfer_bond_data.empty:
-        transfer_bond_data = transfer_bond_data.merge(
-            transactions_with_gas_info_df[
-                ["transaction hash", "gas cost (ETH)", f"gas cost ({currency})"]
-            ],
-            on="transaction hash",
-            how="left",
-        )
-
-    combined_data = pd.concat(
-        [
-            reward_data,
-            fee_data,
-            transfer_bond_data,
-        ]
+    reward_data = merge_gas_info(reward_data, transactions_with_gas_info_df, currency)
+    fee_data = merge_gas_info(fee_data, transactions_with_gas_info_df, currency)
+    transfer_bond_data = merge_gas_info(
+        transfer_bond_data, transactions_with_gas_info_df, currency
     )
+
+    combined_data = pd.concat([reward_data, fee_data, transfer_bond_data])
 
     print(f"\nOverview ({start_time} - {end_time}):")
     total_orchestrator_reward = reward_data["amount"].sum()
