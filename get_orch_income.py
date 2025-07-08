@@ -316,136 +316,110 @@ def get_block_number_by_timestamp(timestamp: int, closest: str = "before") -> in
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
+def fetch_graphql_events(query: str, variables: dict, event_key: str) -> list:
+    """Fetch events from the GraphQL API based on the provided query and event key.
+
+    Args:
+        query: The GraphQL query string.
+        variables: A dictionary of variables to be used in the query.
+        event_key: The key in the response that contains the list of events.
+    Returns:
+        A list of events fetched from the GraphQL API.
+    """
+    all_events = []
+    page_size = variables.get("first", 100)
+    skip = variables.get("skip", 0)
+
+    while True:
+        variables.update({"first": page_size, "skip": skip})
+        try:
+            response = GRAPHQL_CLIENT.execute(query, variable_values=variables)
+            events = response.get(event_key, [])
+            all_events.extend(events)
+
+            if len(events) < page_size:
+                break
+            skip += page_size
+        except Exception as e:
+            print(f"Error while fetching {event_key}: {e}")
+            break
+    return all_events
+
+
 def fetch_reward_events(
     orchestrator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
 ) -> list[object]:
-    """Fetch reward events for a given orchestrator within a specified time range, with
-    pagination.
+    """Fetch reward events for a given orchestrator within a specified time range.
 
     Args:
-        orchestrator: The orchestrator address.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        page_size: The number of results to fetch per page (default: 100).
+        orchestrator: The address of the orchestrator.
+        start_timestamp: The start timestamp for the time range.
+        end_timestamp: The end timestamp for the time range.
+        page_size: The number of events to fetch per page (default: 100).
 
     Returns:
-        A list of all reward events.
+        A list of reward events.
     """
-    all_events = []
-    skip = 0
-    while True:
-        variables = {
-            "orchestrator": orchestrator,
-            "startTimestamp": start_timestamp,
-            "endTimestamp": end_timestamp,
-            "first": page_size,
-            "skip": skip,
-        }
-        try:
-            response = GRAPHQL_CLIENT.execute(
-                REWARD_EVENTS_QUERY, variable_values=variables
-            )
-            events = response.get("rewardEvents", [])
-            all_events.extend(events)
-
-            if len(events) < page_size:
-                break
-            skip += page_size
-        except Exception as e:
-            print(f"Error while fetching reward events: {e}")
-            break
-    return all_events
+    variables = {
+        "orchestrator": orchestrator,
+        "startTimestamp": start_timestamp,
+        "endTimestamp": end_timestamp,
+        "first": page_size,
+        "skip": 0,
+    }
+    return fetch_graphql_events(REWARD_EVENTS_QUERY, variables, "rewardEvents")
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
 def fetch_fee_events(
     recipient: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
 ) -> list[object]:
-    """Fetch fee events for a given recipient within a specified time range, with
-    pagination.
+    """Fetch fee events for a given recipient within a specified time range.
 
     Args:
-        recipient: The recipient address.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        page_size: The number of results to fetch per page (default: 100).
+        recipient: The address of the recipient.
+        start_timestamp: The start timestamp for the time range.
+        end_timestamp: The end timestamp for the time range.
+        page_size: The number of events to fetch per page (default: 100).
 
     Returns:
-        A list of all fee events.
+        A list of fee events.
     """
-    all_events = []
-    skip = 0
-    while True:
-        variables = {
-            "recipient": recipient,
-            "startTimestamp": start_timestamp,
-            "endTimestamp": end_timestamp,
-            "first": page_size,
-            "skip": skip,
-        }
-        try:
-            response = GRAPHQL_CLIENT.execute(
-                WINNING_TICKET_REDEEMED_EVENTS_QUERY, variable_values=variables
-            )
-            events = response.get("winningTicketRedeemedEvents", [])
-            all_events.extend(events)
-
-            if len(events) < page_size:
-                break
-            skip += page_size
-        except Exception as e:
-            print(f"Error while fetching fee events: {e}")
-            break
-    return all_events
+    variables = {
+        "recipient": recipient,
+        "startTimestamp": start_timestamp,
+        "endTimestamp": end_timestamp,
+        "first": page_size,
+        "skip": 0,
+    }
+    return fetch_graphql_events(
+        WINNING_TICKET_REDEEMED_EVENTS_QUERY, variables, "winningTicketRedeemedEvents"
+    )
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
 def fetch_transfer_bond_events(
     old_delegator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
 ) -> list[object]:
-    """Fetch transfer bond events for a given old delegator with pagination.
+    """Fetch transfer bond events for a given old delegator within a specified time range.
 
     Args:
         old_delegator: The address of the old delegator.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        page_size: The number of results to fetch per page (default: 100).
+        start_timestamp: The start timestamp for the time range.
+        end_timestamp: The end timestamp for the time range.
+        page_size: The number of events to fetch per page (default: 100).
 
     Returns:
         A list of transfer bond events.
     """
-    all_events = []
-    skip = 0
-    while True:
-        variables = {
-            "oldDelegator": old_delegator,
-            "startTimestamp": start_timestamp,
-            "endTimestamp": end_timestamp,
-            "first": page_size,
-            "skip": skip,
-        }
-        try:
-            response = GRAPHQL_CLIENT.execute(
-                TRANSFER_BOND_EVENTS_QUERY, variable_values=variables
-            )
-            events = response.get("transferBondEvents", [])
-            all_events.extend(events)
-
-            if len(events) < page_size:
-                break
-            skip += page_size
-        except Exception as e:
-            print(f"Error while fetching transfer bond events: {e}")
-            break
-    return all_events
+    variables = {
+        "oldDelegator": old_delegator,
+        "startTimestamp": start_timestamp,
+        "endTimestamp": end_timestamp,
+        "first": page_size,
+        "skip": 0,
+    }
+    return fetch_graphql_events(
+        TRANSFER_BOND_EVENTS_QUERY, variables, "transferBondEvents"
+    )
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -862,47 +836,22 @@ def fetch_all_transactions(
     Returns:
         A Pandas DataFrame containing all transactions with consistent fields.
     """
-    # Fetch normal transactions.
-    print("Fetching normal transactions...")
-    normal_transactions = fetch_arb_transactions_with_timestamps(
-        address, start_timestamp, end_timestamp, sort="asc"
-    )
-    normal_df = pd.DataFrame(normal_transactions)
-    if not normal_df.empty:
-        print(f"Found {len(normal_df)} normal transactions.")
-    else:
-        print("No normal transactions found for the specified address and time range.")
+    transaction_types = [
+        ("normal", fetch_arb_transactions_with_timestamps),
+        ("token", fetch_arb_token_transactions_with_timestamps),
+        ("internal", fetch_arb_internal_transactions_with_timestamps),
+    ]
 
-    # Fetch token transactions.
-    print("Fetching token transactions...")
-    token_transactions = fetch_arb_token_transactions_with_timestamps(
-        address, start_timestamp, end_timestamp, sort="asc"
-    )
-    token_df = pd.DataFrame(token_transactions)
-    if not token_df.empty:
-        print(f"Found {len(token_df)} token transactions.")
-    else:
-        print("No token transactions found for the specified address and time range.")
+    combined_df = pd.DataFrame()
 
-    # Fetch internal transactions.
-    print("Fetching internal transactions...")
-    internal_transactions = fetch_arb_internal_transactions_with_timestamps(
-        address, start_timestamp, end_timestamp, sort="asc"
-    )
-    internal_df = pd.DataFrame(internal_transactions)
-    if not internal_df.empty:
-        print(f"Found {len(internal_df)} internal transactions.")
-    else:
-        print(
-            "No internal transactions found for the specified address and time range."
-        )
+    for transaction_type, fetch_func in transaction_types:
+        print(f"Fetching {transaction_type} transactions...")
+        transactions = fetch_func(address, start_timestamp, end_timestamp, sort="asc")
+        df = pd.DataFrame(transactions)
+        print(f"{transaction_type.capitalize()} transactions fetched: {len(df)}")
+        combined_df = pd.concat([combined_df, df], ignore_index=True)
 
-    combined_df = pd.concat([normal_df, token_df, internal_df], ignore_index=True)
-    if not combined_df.empty:
-        print(f"Total transactions fetched: {len(combined_df)}")
-    else:
-        print("No transactions found.")
-
+    print(f"Total transactions fetched: {len(combined_df)}")
     return combined_df
 
 
@@ -968,86 +917,31 @@ def retrieve_token_and_eth_transfers(
         A DataFrame with categorized token and ETH transfers, including their price in
         the specified currency.
     """
-    # Ensure 'tokenSymbol' exists in the DataFrame.
-    if "tokenSymbol" not in transactions_df.columns:
-        transactions_df["tokenSymbol"] = None
-
     wallet_address = wallet_address.lower()
     processed_rows = []
 
-    # Only include ETH and LPT transfers.
-    transactions_df = transactions_df[
-        (transactions_df["tokenSymbol"].isna()) |
-        (transactions_df["tokenSymbol"] == "ETH") |
-        (transactions_df["tokenSymbol"] == "LPT")
-    ]
-
     def process_transactions(transactions, transaction_category, token_symbol):
-        """Helper function to process transactions."""
         for _, row in transactions.iterrows():
-            timestamp = datetime.fromtimestamp(
-                int(row["timeStamp"]), tz=timezone.utc
-            ).strftime("%Y-%m-%d %H:%M:%S")
-            price = fetch_crypto_price(token_symbol, currency, int(row["timeStamp"]))
-            amount = float(row["value"]) / 10**18  # Convert wei to ETH
-            function_name = infer_function_name(row, transactions_df)
             processed_rows.append(
                 {
-                    "timestamp": timestamp,
+                    "timestamp": row["timeStamp"],
                     "transaction hash": row["hash"],
-                    "transaction url": create_arbiscan_url(row["hash"]),
-                    "transaction type": "transfer",
                     "direction": transaction_category,
                     "currency": token_symbol,
-                    "amount": amount,
-                    f"price ({currency})": price,
-                    f"value ({currency})": amount * price,
-                    "source function": function_name,
+                    "amount": row["value"],
                 }
             )
 
-    # Process LPT transactions.
-    process_transactions(
-        transactions_df[
-            (transactions_df["tokenSymbol"] == "LPT")
-            & (transactions_df["to"].str.lower() == wallet_address)
-        ],
-        "incoming",
-        "LPT",
-    )
-    process_transactions(
-        transactions_df[
-            (transactions_df["tokenSymbol"] == "LPT")
-            & (transactions_df["from"].str.lower() == wallet_address)
-        ],
-        "outgoing",
-        "LPT",
-    )
-
-    # Process ETH transactions.
-    process_transactions(
-        transactions_df[
-            (
-                (transactions_df["tokenSymbol"] == "ETH")
-                | (transactions_df["value"].astype(float) > 0)
+    for token_symbol in ["LPT", "ETH"]:
+        for direction, column in [("incoming", "to"), ("outgoing", "from")]:
+            process_transactions(
+                transactions_df[
+                    (transactions_df["tokenSymbol"] == token_symbol)
+                    & (transactions_df[column].str.lower() == wallet_address)
+                ],
+                direction,
+                token_symbol,
             )
-            & (transactions_df["to"].str.lower() == wallet_address)
-        ],
-        "incoming",
-        "ETH",
-    )
-    process_transactions(
-        transactions_df[
-            (
-                (transactions_df["tokenSymbol"] == "ETH")
-                | (transactions_df["value"].astype(float) > 0)
-            )
-            & (transactions_df["from"].str.lower() == wallet_address)
-        ],
-        "outgoing",
-        "ETH",
-    )
-
     return pd.DataFrame(processed_rows)
 
 
@@ -1083,6 +977,7 @@ if __name__ == "__main__":
     transactions_with_gas_info_df = filter_transactions_by_sender(
         transactions_df, orchestrator
     )
+    print(f"Total transactions found: {len(transactions_with_gas_info_df)}")
 
     print("\nAdd gas cost information to transactions")
     transactions_with_gas_info_df = add_gas_cost_information(
