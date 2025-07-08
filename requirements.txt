@@ -1,8 +1,7 @@
-requests
-
 gql[requests]
 web3
 tenacity
 tabulate
 tqdm
 pandas
+openpyxl

@@ -14,6 +14,7 @@ from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 from web3 import Web3
 import pandas as pd
+from pandas import ExcelWriter
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -87,15 +88,6 @@ query RewardEvents(
         rewardCut
       }
     }
-  }
-}
-"""
-)
-POOL_DATA_QUERY = gql(
-    """
-query PoolData($poolId: String!) {
-  pool(id: $poolId) {
-    rewardCut
   }
 }
 """
@@ -174,6 +166,26 @@ query TransferBondEvents(
 )
 
 
+CSV_COLUMN_ORDER = [
+    "timestamp",
+    "transaction hash",
+    "transaction url",
+    "direction",
+    "transaction type",
+    "currency",
+    "amount",
+    "value (EUR)",
+    "price (EUR)",
+    "gas cost (EUR)",
+    "gas cost (ETH)",
+    "round",
+    "pool reward",
+    "reward cut",
+    "face value",
+    "fee share",
+]
+
+
 def filter_transactions_by_sender(
     df: pd.DataFrame, wallet_address: str
 ) -> pd.DataFrame:
@@ -200,6 +212,7 @@ def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.Data
     Returns:
         pd.DataFrame: The updated DataFrame with gas cost information added.
     """
+    df = df.copy()
 
     def calculate_gas_cost_currency(row):
         """Calculate gas cost in the specified currency."""
@@ -207,14 +220,19 @@ def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.Data
             eth_price = fetch_crypto_price("ETH", currency, int(row["timeStamp"]))
             return row["gas cost (ETH)"] * eth_price
         except Exception as e:
-            print(f"Error fetching ETH price for transaction {row['hash']}: {e}")
+            print(f"Error fetching ETH price for transaction at index {row.name}: {e}")
             return 0
+
+    if not all(col in df.columns for col in ["gasPrice", "gasUsed", "timeStamp"]):
+        raise ValueError(
+            "Missing required columns: 'gasPrice', 'gasUsed', or 'timeStamp'."
+        )
 
     df["gas cost (ETH)"] = (
         df["gasPrice"].astype(float) * df["gasUsed"].astype(float)
     ) / 10**18
     df[f"gas cost ({currency})"] = df.progress_apply(
-        calculate_gas_cost_currency, axis=1
+        lambda row: calculate_gas_cost_currency(row), axis=1
     )
 
     return df
@@ -748,27 +766,50 @@ def fetch_all_transactions(
         end_timestamp: The end timestamp in Unix format.
 
     Returns:
-        A Pandas DataFrame containing all transactions.
+        A Pandas DataFrame containing all transactions with consistent fields.
     """
-    print("Fetch normal transactions...")
+    # Fetch normal transactions.
+    print("Fetching normal transactions...")
     normal_transactions = fetch_arb_transactions_with_timestamps(
         address, start_timestamp, end_timestamp, sort="asc"
     )
+    normal_df = pd.DataFrame(normal_transactions)
+    if not normal_df.empty:
+        print(f"Found {len(normal_df)} normal transactions.")
+    else:
+        print("No normal transactions found for the specified address and time range.")
 
-    print("Fetch token transactions...")
+    # Fetch token transactions.
+    print("Fetching token transactions...")
     token_transactions = fetch_arb_token_transactions_with_timestamps(
         address, start_timestamp, end_timestamp, sort="asc"
     )
+    token_df = pd.DataFrame(token_transactions)
+    if not token_df.empty:
+        print(f"Found {len(token_df)} token transactions.")
+    else:
+        print("No token transactions found for the specified address and time range.")
 
-    print("Fetch internal transactions...")
+    # Fetch internal transactions.
+    print("Fetching internal transactions...")
     internal_transactions = fetch_arb_internal_transactions_with_timestamps(
         address, start_timestamp, end_timestamp, sort="asc"
     )
+    internal_df = pd.DataFrame(internal_transactions)
+    if not internal_df.empty:
+        print(f"Found {len(internal_df)} internal transactions.")
+    else:
+        print(
+            "No internal transactions found for the specified address and time range."
+        )
 
-    all_transactions = normal_transactions + token_transactions + internal_transactions
-    df = pd.DataFrame(all_transactions)
+    combined_df = pd.concat([normal_df, token_df, internal_df], ignore_index=True)
+    if not combined_df.empty:
+        print(f"Total transactions fetched: {len(combined_df)}")
+    else:
+        print("No transactions found.")
 
-    return df
+    return combined_df
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -803,13 +844,14 @@ def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
-                "transaction category": "inward",
+                "direction": "incoming",
                 "currency": "LPT",
                 "pool reward": pool_reward,
                 "reward cut": reward_cut,
                 "amount": orchestrator_reward,
-                f"LPT price ({currency})": lpt_price,
+                f"price ({currency})": lpt_price,
                 f"value ({currency})": value_currency,
+                "source function": "rewardWithHint",
             }
         )
     return pd.DataFrame(rows)
@@ -847,13 +889,14 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
-                "transaction category": "inward",
+                "direction": "incoming",
                 "currency": "ETH",
                 "face value": face_value,
                 "fee share": fee_share,
                 "amount": orch_fee,
-                f"ETH price ({currency})": eth_price,
+                f"price ({currency})": eth_price,
                 f"value ({currency})": value_currency,
+                "source function": "redeemWinningTicket",
             }
         )
     return pd.DataFrame(rows)
@@ -894,13 +937,14 @@ def process_transfer_bond_events(
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
-                "transaction category": transaction_category,
+                "direction": transaction_category,
                 "from": event["oldDelegator"]["id"],
                 "to": event["newDelegator"]["id"],
                 "currency": "LPT",
                 "amount": amount,
-                f"LPT price ({currency})": lpt_price,
+                f"price ({currency})": lpt_price,
                 f"value ({currency})": value_currency,
+                "source function": "transferBond",
             }
         )
     return pd.DataFrame(rows)
@@ -958,6 +1002,120 @@ def fetch_and_process_events(
         return pd.DataFrame()
 
 
+def infer_function_name(row: pd.Series, transactions_df: pd.DataFrame) -> str:
+    """Infer the function name for a transaction based on other transactions with the
+    same hash or the functionName field.
+
+    Args:
+        row: A Pandas Series representing a transaction row.
+        transactions_df: A DataFrame containing all transactions.
+
+    Returns:
+        The inferred function name, or None if it cannot be determined.
+    """
+    if "functionName" in row and pd.notna(row["functionName"]):
+        return row["functionName"].split("(")[0]
+
+    # Look for another transaction with the same hash.
+    matching_transaction = transactions_df[transactions_df["hash"] == row["hash"]]
+    if not matching_transaction.empty:
+        function_name = matching_transaction.iloc[0].get("functionName", "")
+        if pd.notna(function_name):
+            return function_name.split("(")[0]
+    return None
+
+
+def retrieve_token_and_eth_transfers(
+    transactions_df: pd.DataFrame, wallet_address: str, currency: str
+) -> pd.DataFrame:
+    """Retrieve incoming/outgoing token (LPT) and ETH transfers, including their price
+    in the specified currency, and infer missing function names.
+
+    Args:
+        transactions_df: A Pandas DataFrame containing all transactions.
+        wallet_address: The wallet address to filter transactions for.
+        currency: The target currency for conversion (e.g., "EUR").
+
+    Returns:
+        A DataFrame with categorized token and ETH transfers, including their price in
+        the specified currency.
+    """
+    # Ensure 'tokenSymbol' exists in the DataFrame.
+    if "tokenSymbol" not in transactions_df.columns:
+        transactions_df["tokenSymbol"] = None
+
+    wallet_address = wallet_address.lower()
+    processed_rows = []
+
+    def process_transactions(transactions, transaction_category, token_symbol):
+        """Helper function to process transactions."""
+        for _, row in transactions.iterrows():
+            timestamp = datetime.fromtimestamp(
+                int(row["timeStamp"]), tz=timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            price = fetch_crypto_price(token_symbol, currency, int(row["timeStamp"]))
+            amount = float(row["value"]) / 10**18  # Convert wei to ETH
+            function_name = infer_function_name(row, transactions_df)
+            processed_rows.append(
+                {
+                    "timestamp": timestamp,
+                    "transaction hash": row["hash"],
+                    "transaction url": create_arbiscan_url(row["hash"]),
+                    "transaction type": "transfer",
+                    "direction": transaction_category,
+                    "currency": token_symbol,
+                    "amount": amount,
+                    f"price ({currency})": price,
+                    f"value ({currency})": amount * price,
+                    "source function": function_name,
+                }
+            )
+
+    # Process LPT transactions.
+    process_transactions(
+        transactions_df[
+            (transactions_df["tokenSymbol"] == "LPT")
+            & (transactions_df["to"].str.lower() == wallet_address)
+        ],
+        "incoming",
+        "LPT",
+    )
+    process_transactions(
+        transactions_df[
+            (transactions_df["tokenSymbol"] == "LPT")
+            & (transactions_df["from"].str.lower() == wallet_address)
+        ],
+        "outgoing",
+        "LPT",
+    )
+
+    # Process ETH transactions.
+    process_transactions(
+        transactions_df[
+            (
+                (transactions_df["tokenSymbol"] == "ETH")
+                | (transactions_df["value"].astype(float) > 0)
+            )
+            & (transactions_df["to"].str.lower() == wallet_address)
+        ],
+        "incoming",
+        "ETH",
+    )
+    process_transactions(
+        transactions_df[
+            (
+                (transactions_df["tokenSymbol"] == "ETH")
+                | (transactions_df["value"].astype(float) > 0)
+            )
+            & (transactions_df["from"].str.lower() == wallet_address)
+        ],
+        "outgoing",
+        "ETH",
+    )
+
+    return pd.DataFrame(processed_rows)
+
+
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
@@ -991,12 +1149,11 @@ if __name__ == "__main__":
         transactions_df, orchestrator
     )
 
-    print("Add gas cost information to transactions")
+    print("\nAdd gas cost information to transactions")
     transactions_with_gas_info_df = add_gas_cost_information(
         transactions_with_gas_info_df, currency
     )
 
-    # Rename 'hash' column to 'transaction hash' for consistency
     transactions_with_gas_info_df.rename(
         columns={"hash": "transaction hash"}, inplace=True
     )
@@ -1035,7 +1192,28 @@ if __name__ == "__main__":
     ]
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
-    print("\nStoring data in CSV format...")
-    csv_file = "orchestrator_income.csv"
-    combined_data.to_csv(csv_file, index=False)
-    print(f"CSV file '{csv_file}' created successfully!")
+    print("\nRetrieve token and ETH transfers...")
+    token_and_eth_transfers = retrieve_token_and_eth_transfers(
+        transactions_df, orchestrator, currency
+    )
+
+    print("Add missing gas cost information to token and ETH transfers...")
+    token_and_eth_transfers = merge_gas_info(
+        token_and_eth_transfers, transactions_with_gas_info_df, currency
+    )
+
+    print("Merging token and ETH transfers with reward, fee, and transfer bond data...")
+    combined_df = pd.concat(
+        [token_and_eth_transfers, reward_data, fee_data, transfer_bond_data],
+        ignore_index=True,
+    ).sort_values(by="timestamp")
+    combined_df = combined_df[CSV_COLUMN_ORDER]
+
+    overview_df = pd.DataFrame(overview_table, columns=["Metric", "Value"])
+
+    print("\nExporting data to Excel with two tabs...")
+    with ExcelWriter("orchestrator_income.xlsx") as writer:
+        overview_df.to_excel(writer, sheet_name="overview", index=False)
+        combined_df.to_excel(writer, sheet_name="transactions", index=False)
+
+    print("Excel export completed.")
