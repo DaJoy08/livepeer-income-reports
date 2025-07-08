@@ -502,20 +502,24 @@ def fetch_transfer_bond_events(
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
-def fetch_arb_transactions(
-    address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
+def fetch_transactions(
+    address: str,
+    start_block: int,
+    end_block: int,
+    sort: str = "asc",
+    action: str = "txlist",
 ) -> list:
-    """Fetch transactions for a given address on the Arbitrum (Layer 2) chain using the
-    Arbiscan API, with pagination.
+    """Fetch transactions for a given address on the Arbitrum (Layer 2) chain using the Arbiscan API.
 
     Args:
         address: The wallet address to fetch transactions for.
-        start_block: The starting block number (default: 0).
-        end_block: The ending block number (default: 99999999).
+        start_block: The starting block number.
+        end_block: The ending block number.
         sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+        action: The type of transaction to fetch (e.g., 'txlist', 'tokentx', 'txlistinternal').
 
     Returns:
-        A list of all unique transactions on the Arbitrum chain.
+        A list of transactions.
     """
     all_transactions = []
     processed_hashes = set()
@@ -526,7 +530,7 @@ def fetch_arb_transactions(
         params = {
             "chainid": 42161,
             "module": "account",
-            "action": "txlist",
+            "action": action,
             "address": address,
             "startblock": current_start_block,
             "endblock": end_block,
@@ -536,38 +540,92 @@ def fetch_arb_transactions(
             "apikey": ARBISCAN_API_KEY_TOKEN,
         }
 
-        response = requests.get(ARBISCAN_ENDPOINT, params=params)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = requests.get(ARBISCAN_ENDPOINT, params=params)
+            response.raise_for_status()
+            data = response.json()
 
-        if data["status"] == "1":
-            transactions = data["result"]
+            if data["status"] == "1":
+                transactions = data["result"]
 
-            # Filter out duplicate transactions and add to final list.
-            new_transactions = [
-                tx for tx in transactions if tx["hash"] not in processed_hashes
-            ]
-            all_transactions.extend(new_transactions)
-            processed_hashes.update(tx["hash"] for tx in new_transactions)
+                # Filter out duplicate transactions and add to final list.
+                new_transactions = [
+                    tx for tx in transactions if tx["hash"] not in processed_hashes
+                ]
+                all_transactions.extend(new_transactions)
+                processed_hashes.update(tx["hash"] for tx in new_transactions)
 
-            # If limit hit on Arbitrum chain, set next start_block to last block - 1.
-            if len(transactions) == max_records:
-                last_block_number = int(transactions[-1]["blockNumber"])
-                current_start_block = last_block_number - 1
-            else:
+                # If limit hit on Arbitrum chain, set next start_block to last block - 1.
+                if len(transactions) == max_records:
+                    last_block_number = int(transactions[-1]["blockNumber"])
+                    current_start_block = last_block_number - 1
+                else:
+                    break
+            elif data["status"] == "0" and data["message"] == "No transactions found":
                 break
-        elif data["status"] == "0" and data["message"] == "No transactions found":
+            else:
+                raise Exception(f"Error fetching transactions: {data['message']}")
+        except Exception as e:
+            print(f"Error fetching transactions: {e}")
             break
-        else:
-            raise Exception(f"Error fetching transactions: {data['message']}")
+
     return all_transactions
+
+
+def fetch_arb_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch normal transactions for a given address on the Arbitrum chain.
+    
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    Returns:
+        A list of normal transactions.
+    """
+    return fetch_transactions(address, start_block, end_block, sort, action="txlist")
+
+
+def fetch_arb_token_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch token transactions for a given address on the Arbitrum chain.
+    
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    
+    Returns:
+        A list of token transactions.
+    """
+    return fetch_transactions(address, start_block, end_block, sort, action="tokentx")
+
+
+def fetch_arb_internal_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch internal transactions for a given address on the Arbitrum chain.
+    
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    
+    Returns:
+        A list of internal transactions.
+    """
+    return fetch_transactions(address, start_block, end_block, sort, action="txlistinternal")
 
 
 def fetch_arb_transactions_with_timestamps(
     address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
 ) -> list:
-    """Fetch transactions for a given address on the Arbitrum (Layer 2) chain using
-    timestamps.
+    """Fetch normal transactions for a given address within a specified time range.
 
     Args:
         address: The wallet address to fetch transactions for.
@@ -576,178 +634,45 @@ def fetch_arb_transactions_with_timestamps(
         sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
 
     Returns:
-        A list of ETH transactions on the Arbitrum chain within the specified time
-        range.
+        A list of normal transactions.
     """
     start_block = get_block_number_by_timestamp(start_timestamp)
     end_block = get_block_number_by_timestamp(end_timestamp)
     return fetch_arb_transactions(address, start_block, end_block, sort)
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_arb_token_transactions(
-    address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
-) -> list:
-    """Fetch token transactions for a given address on the Arbitrum (Layer 2) chain
-    using the Arbiscan API, with pagination.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number (default: 0).
-        end_block: The ending block number (default: 99999999).
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        list: A list of  token transactions.
-    """
-    all_transactions = []
-    processed_hashes = set()
-    max_records = 1000  # Free tier limit
-    current_start_block = start_block
-
-    while current_start_block <= end_block:
-        params = {
-            "chainid": 42161,
-            "module": "account",
-            "action": "tokentx",
-            "address": address,
-            "startblock": current_start_block,
-            "endblock": end_block,
-            "page": 1,
-            "offset": max_records,
-            "sort": sort,
-            "apikey": ARBISCAN_API_KEY_TOKEN,
-        }
-
-        response = requests.get(ARBISCAN_ENDPOINT, params=params)
-        response.raise_for_status()
-        data = response.json()
-
-        if data["status"] == "1":
-            transactions = data["result"]
-
-            # Filter out duplicate transactions and add to final list.
-            new_transactions = [
-                tx for tx in transactions if tx["hash"] not in processed_hashes
-            ]
-            all_transactions.extend(new_transactions)
-            processed_hashes.update(tx["hash"] for tx in new_transactions)
-
-            # If limit hit on Arbitrum chain, set next start_block to last block - 1.
-            if len(transactions) == max_records:
-                last_block_number = int(transactions[-1]["blockNumber"])
-                current_start_block = last_block_number - 1
-            else:
-                break
-        elif data["status"] == "0" and data["message"] == "No transactions found":
-            break
-        else:
-            raise Exception(f"Error fetching LPT transactions: {data['message']}")
-    return all_transactions
-
-
 def fetch_arb_token_transactions_with_timestamps(
     address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
 ) -> list:
-    """Fetch token transactions for a given address on the Arbitrum (Layer 2) chain
-    using timestamps.
-
+    """Fetch token transactions for a given address within a specified time range.
+    
     Args:
         address: The wallet address to fetch transactions for.
         start_timestamp: The start timestamp in Unix format.
         end_timestamp: The end timestamp in Unix format.
-
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    
     Returns:
-        A list of token transactions within the specified time range.
+        A list of token transactions.
     """
     start_block = get_block_number_by_timestamp(start_timestamp)
     end_block = get_block_number_by_timestamp(end_timestamp)
     return fetch_arb_token_transactions(address, start_block, end_block, sort)
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_arb_internal_transactions(
-    address: str, start_block: int = 0, end_block: int = 99999999, sort: str = "asc"
-) -> list:
-    """Fetch internal transactions for a given address on the Arbitrum (Layer 2) chain
-    using the Arbiscan API, with pagination.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number (default: 0).
-        end_block: The ending block number (default: 99999999).
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        list: A list of internal transactions.
-    """
-    all_transactions = []
-    processed_hashes = set()
-    max_records = 1000  # Free tier limit
-    current_start_block = start_block
-
-    while current_start_block <= end_block:
-        params = {
-            "chainid": 42161,
-            "module": "account",
-            "action": "txlistinternal",
-            "address": address,
-            "startblock": current_start_block,
-            "endblock": end_block,
-            "page": 1,
-            "offset": max_records,
-            "sort": sort,
-            "apikey": ARBISCAN_API_KEY_TOKEN,
-        }
-
-        response = requests.get(ARBISCAN_ENDPOINT, params=params)
-        response.raise_for_status()
-        data = response.json()
-
-        if data["status"] == "1":
-            transactions = data["result"]
-
-            # Filter out duplicate transactions and add to final list.
-            new_transactions = [
-                tx for tx in transactions if tx["hash"] not in processed_hashes
-            ]
-            all_transactions.extend(new_transactions)
-            processed_hashes.update(tx["hash"] for tx in new_transactions)
-
-            # If limit hit on Arbitrum chain, set next start_block to last block - 1.
-            if len(transactions) == max_records:
-                last_block_number = int(transactions[-1]["blockNumber"])
-                current_start_block = last_block_number - 1
-            else:
-                break
-        elif data["status"] == "0" and data["message"] == "No transactions found":
-            break
-        else:
-            raise Exception(f"Error fetching internal transactions: {data['message']}")
-    return all_transactions
-
-
 def fetch_arb_internal_transactions_with_timestamps(
     address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
 ) -> list:
-    """Fetch internal transactions for a given address on the Arbitrum (Layer 2) chain
-    using timestamps.
-
+    """Fetch internal transactions for a given address within a specified time range.
+    
     Args:
         address: The wallet address to fetch transactions for.
         start_timestamp: The start timestamp in Unix format.
         end_timestamp: The end timestamp in Unix format.
-
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    
     Returns:
-        A list of internal transactions within the specified time range.
+        A list of internal transactions.
     """
     start_block = get_block_number_by_timestamp(start_timestamp)
     end_block = get_block_number_by_timestamp(end_timestamp)
