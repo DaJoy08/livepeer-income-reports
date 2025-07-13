@@ -7,7 +7,6 @@ Upstream Improvements:
 
 # TODO:
     - Add LPT and ETH graphs to showcase (rewards, compounding rewards, transfers).
-    - Fix compounding stake to use (unbond, bond, and transfer bond methods).
 """
 
 import os
@@ -188,13 +187,13 @@ CSV_COLUMN_ORDER = [
     "gas cost (EUR)",
     "gas cost (ETH)",
     "round",
-    "pool reward",
-    "reward cut",
-    "face value",
-    "fee share",
-    "source function",
     "pending stake",
     "compounding rewards",
+    "reward cut",
+    "fee share",
+    "pool reward",
+    "face value",
+    "source function",
 ]
 
 
@@ -268,38 +267,16 @@ def filter_transactions_by_sender(
     return df[df["from"].str.lower() == wallet_address.lower()]
 
 
-def fetch_block_hash_for_round(round_number: str | int) -> str:
-    """Fetch the block hash for a specific round using the RoundsManager contract.
-
-    Args:
-        round_number: The round number.
-
-    Returns:
-        str: The block hash as a hexadecimal string.
-    """
-    try:
-        rounds_manager_contract = ARB_CLIENT.eth.contract(
-            address=ROUNDS_MANAGER_CONTRACT_ADDRESS, abi=ROUNDS_MANAGER_ABI
-        )
-        block_hash = rounds_manager_contract.functions.blockHashForRound(
-            int(round_number)
-        ).call()
-        return Web3.to_hex(block_hash)
-    except Exception as e:
-        print(f"Error fetching block hash for round {round_number}: {e}")
-        return None
-
-
 def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.DataFrame:
     """Add gas cost information (in ETH and specified currency) to a DataFrame.
 
     Args:
-        df (pd.DataFrame): A Pandas DataFrame containing transaction data with columns
-            'gasPrice', 'gasUsed', and 'timestamp'.
-        currency (str): The target currency for conversion (default: "EUR").
+        df: A Pandas DataFrame containing transaction data with columns 'gasPrice',
+            'gasUsed', and 'timestamp'.
+        currency: The target currency for conversion (default: "EUR").
 
     Returns:
-        pd.DataFrame: The updated DataFrame with gas cost information added.
+        The updated DataFrame with gas cost information added.
     """
     df = df.copy()
 
@@ -366,7 +343,25 @@ def create_arbiscan_url(transaction_id: str) -> str:
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
-def get_block_number_by_timestamp(timestamp: int, closest: str = "before") -> int:
+def fetch_gas_used_from_rpc(transaction_id: str) -> int:
+    """Retrieve the actual gas used for a transaction using Web3 and Arbitrum RPC.
+
+    Args:
+        transaction_id: The transaction ID.
+
+    Returns:
+        The gas used for the transaction.
+    """
+    receipt = ARB_CLIENT.eth.get_transaction_receipt(transaction_id)
+    return receipt["gasUsed"]
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_block_number_by_timestamp(timestamp: int, closest: str = "before") -> int:
     """Fetch the block number for a given timestamp using the Arbiscan API.
 
     Args:
@@ -403,6 +398,69 @@ def get_block_number_by_timestamp(timestamp: int, closest: str = "before") -> in
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
+def fetch_block_hash_for_round(round_number: str | int) -> str:
+    """Fetch the block hash for a specific round using the RoundsManager contract.
+
+    Args:
+        round_number: The round number.
+
+    Returns:
+        The block hash as a hexadecimal string.
+    """
+    try:
+        rounds_manager_contract = ARB_CLIENT.eth.contract(
+            address=ROUNDS_MANAGER_CONTRACT_ADDRESS, abi=ROUNDS_MANAGER_ABI
+        )
+        block_hash = rounds_manager_contract.functions.blockHashForRound(
+            int(round_number)
+        ).call()
+        return Web3.to_hex(block_hash)
+    except Exception as e:
+        print(f"Error fetching block hash for round {round_number}: {e}")
+        return None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
+    """Fetch the pending stake for a given orchestrator at a specific block hash.
+
+    Args:
+        orchestrator: The address of the orchestrator.
+        block_hash: The block hash to fetch the pending stake at.
+
+    Returns:
+        The pending stake for the orchestrator at the specified block hash.
+    """
+    try:
+        checksum_address = Web3.to_checksum_address(orchestrator)
+        bonding_manager_contract = ARB_CLIENT.eth.contract(
+            address=BONDING_MANAGER_CONTRACT_ADDRESS, abi=BONDING_MANAGER_ABI
+        )
+        pending_stake = bonding_manager_contract.functions.pendingStake(
+            checksum_address, 0
+        ).call(block_identifier=block_hash)
+        return pending_stake / 10**18
+    except Exception as e:
+        if "missing trie node" in str(e) and not RPC_HISTORY_ERROR_DISPLAYED:
+            print(
+                "\033[93mWarning: RPC node lacks historical data for pendingStake. "
+                "Switch to an archive node provider like Infura or Alchemy.\033[0m"
+            )
+            RPC_HISTORY_ERROR_DISPLAYED = True
+        else:
+            print(f"Error fetching pending stake for block hash {block_hash}: {e}")
+        return None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
 def fetch_graphql_events(query: str, variables: dict, event_key: str) -> list:
     """Fetch events from the GraphQL API based on the provided query and event key.
 
@@ -431,6 +489,269 @@ def fetch_graphql_events(query: str, variables: dict, event_key: str) -> list:
             print(f"Error while fetching {event_key}: {e}")
             break
     return all_events
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_crypto_price(
+    crypto_symbol: str, target_currency: str, unix_timestamp: int
+) -> float:
+    """Fetch the historical price of a cryptocurrency in a specific currency at a
+    specific timestamp using the CryptoCompare API.
+
+    Args:
+        crypto_symbol: The cryptocurrency symbol (e.g., "ETH", "LPT").
+        target_currency: The target currency symbol (e.g., "EUR", "USD").
+        unix_timestamp: The Unix timestamp for the desired historical price.
+
+    Returns:
+        The price of the cryptocurrency in the target currency.
+
+    Raises:
+        ValueError: If the API response indicates an error or rate limit exceeded.
+    """
+    url = "https://min-api.cryptocompare.com/data/v2/histoday"
+    params = {
+        "fsym": crypto_symbol,
+        "tsym": target_currency,
+        "limit": 1,
+        "toTs": unix_timestamp,
+        "api_key": CRYPTO_COMPARE_API_KEY,
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        raise ValueError(f"Error fetching crypto price: {e}")
+
+    if data.get("Response") == "Error":
+        raise ValueError(f"CryptoCompare API Error: {data.get('Message')}")
+    if not data.get("Data") or not data["Data"].get("Data"):
+        raise ValueError("CryptoCompare API returned empty or invalid data.")
+    return data["Data"]["Data"][-1]["close"]
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_transactions(
+    address: str,
+    start_block: int,
+    end_block: int,
+    sort: str = "asc",
+    action: str = "txlist",
+) -> list:
+    """Fetch transactions for a given address on the Arbitrum (Layer 2) chain using the
+    Arbiscan API.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+        action: The type of transaction to fetch (e.g., 'txlist', 'tokentx',
+            'txlistinternal').
+
+    Returns:
+        A list of transactions.
+    """
+    all_transactions = []
+    processed_hashes = set()
+    max_records = 1000  # Free tier limit
+    current_start_block = start_block
+
+    while current_start_block <= end_block:
+        params = {
+            "chainid": 42161,
+            "module": "account",
+            "action": action,
+            "address": address,
+            "startblock": current_start_block,
+            "endblock": end_block,
+            "page": 1,
+            "offset": max_records,
+            "sort": sort,
+            "apikey": ARBISCAN_API_KEY_TOKEN,
+        }
+
+        try:
+            response = requests.get(ARBISCAN_ENDPOINT, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data["status"] == "1":
+                transactions = data["result"]
+
+                # Filter out duplicate transactions and add to final list.
+                new_transactions = [
+                    tx for tx in transactions if tx["hash"] not in processed_hashes
+                ]
+                all_transactions.extend(new_transactions)
+                processed_hashes.update(tx["hash"] for tx in new_transactions)
+
+                # If limit hit, set next start_block to last block - 1.
+                if len(transactions) == max_records:
+                    last_block_number = int(transactions[-1]["blockNumber"])
+                    current_start_block = last_block_number - 1
+                else:
+                    break
+            elif data["status"] == "0" and data["message"] == "No transactions found":
+                break
+            else:
+                raise Exception(f"Error fetching transactions: {data['message']}")
+        except Exception as e:
+            print(f"Error fetching transactions: {e}")
+            break
+    return all_transactions
+
+
+def fetch_arb_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch normal transactions for a given address on the Arbitrum chain.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+    Returns:
+        A list of normal transactions.
+    """
+    return fetch_transactions(address, start_block, end_block, sort, action="txlist")
+
+
+def fetch_arb_token_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch token transactions for a given address on the Arbitrum chain.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        A list of token transactions.
+    """
+    return fetch_transactions(address, start_block, end_block, sort, action="tokentx")
+
+
+def fetch_arb_internal_transactions(
+    address: str, start_block: int, end_block: int, sort: str = "asc"
+) -> list:
+    """Fetch internal transactions for a given address on the Arbitrum chain.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_block: The starting block number.
+        end_block: The ending block number.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        A list of internal transactions.
+    """
+    return fetch_transactions(
+        address, start_block, end_block, sort, action="txlistinternal"
+    )
+
+
+def fetch_arb_transactions_with_timestamps(
+    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
+) -> list:
+    """Fetch normal transactions for a given address within a specified time range.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        A list of normal transactions.
+    """
+    start_block = fetch_block_number_by_timestamp(start_timestamp)
+    end_block = fetch_block_number_by_timestamp(end_timestamp)
+    return fetch_arb_transactions(address, start_block, end_block, sort)
+
+
+def fetch_arb_token_transactions_with_timestamps(
+    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
+) -> list:
+    """Fetch token transactions for a given address within a specified time range.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        A list of token transactions.
+    """
+    start_block = fetch_block_number_by_timestamp(start_timestamp)
+    end_block = fetch_block_number_by_timestamp(end_timestamp)
+    return fetch_arb_token_transactions(address, start_block, end_block, sort)
+
+
+def fetch_arb_internal_transactions_with_timestamps(
+    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
+) -> list:
+    """Fetch internal transactions for a given address within a specified time range.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
+
+    Returns:
+        A list of internal transactions.
+    """
+    start_block = fetch_block_number_by_timestamp(start_timestamp)
+    end_block = fetch_block_number_by_timestamp(end_timestamp)
+    return fetch_arb_internal_transactions(address, start_block, end_block, sort)
+
+
+def fetch_all_transactions(
+    address: str, start_timestamp: int, end_timestamp: int
+) -> pd.DataFrame:
+    """Fetch all normal, internal, and token transactions for a given address and store
+    them in a DataFrame.
+
+    Args:
+        address: The wallet address to fetch transactions for.
+        start_timestamp: The start timestamp in Unix format.
+        end_timestamp: The end timestamp in Unix format.
+
+    Returns:
+        A Pandas DataFrame containing all transactions with consistent fields.
+    """
+    transaction_types = [
+        ("normal", fetch_arb_transactions_with_timestamps),
+        ("token", fetch_arb_token_transactions_with_timestamps),
+        ("internal", fetch_arb_internal_transactions_with_timestamps),
+    ]
+
+    combined_df = pd.DataFrame()
+
+    for transaction_type, fetch_func in transaction_types:
+        print(f"Fetching {transaction_type} transactions...")
+        transactions = fetch_func(address, start_timestamp, end_timestamp, sort="asc")
+        df = pd.DataFrame(transactions)
+        print(f"{transaction_type.capitalize()} transactions fetched: {len(df)}")
+        combined_df = pd.concat([combined_df, df], ignore_index=True)
+
+    print(f"Total transactions fetched: {len(combined_df)}")
+    return combined_df
 
 
 def fetch_reward_events(
@@ -569,42 +890,6 @@ def fetch_transfer_bond_events(
     return fetch_graphql_events(
         TRANSFER_BOND_EVENTS_QUERY_BASE, variables, "transferBondEvents"
     )
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
-    """Fetch the pending stake for a given orchestrator at a specific block hash.
-
-    Args:
-        orchestrator: The address of the orchestrator.
-        block_hash: The block hash to fetch the pending stake at.
-
-    Returns:
-        The pending stake for the orchestrator at the specified block hash.
-    """
-    try:
-        checksum_address = Web3.to_checksum_address(orchestrator)
-        bonding_manager_contract = ARB_CLIENT.eth.contract(
-            address=BONDING_MANAGER_CONTRACT_ADDRESS, abi=BONDING_MANAGER_ABI
-        )
-        pending_stake = bonding_manager_contract.functions.pendingStake(
-            checksum_address, 0
-        ).call(block_identifier=block_hash)
-        return pending_stake / 10**18
-    except Exception as e:
-        if "missing trie node" in str(e) and not RPC_HISTORY_ERROR_DISPLAYED:
-            print(
-                "\033[93mWarning: RPC node lacks historical data for pendingStake. "
-                "Switch to an archive node provider like Infura or Alchemy.\033[0m"
-            )
-            RPC_HISTORY_ERROR_DISPLAYED = True
-        else:
-            print(f"Error fetching pending stake for block hash {block_hash}: {e}")
-        return None
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -829,8 +1114,11 @@ def process_transfer_bond_events(
     return pd.DataFrame(rows)
 
 
-# TODO: Depends on global vars.
 def fetch_and_process_events(
+    orchestrator: str,
+    start_timestamp: int,
+    end_timestamp: int,
+    currency: str,
     fetch_func: Callable[[str, int, int], list],
     process_func: Callable[[list, str], pd.DataFrame],
     event_name: str,
@@ -838,6 +1126,10 @@ def fetch_and_process_events(
     """Fetch and process blockchain events for a given orchestrator and time range.
 
     Args:
+        orchestrator: The address of the orchestrator.
+        start_timestamp: The start timestamp for the time range.
+        end_timestamp: The end timestamp for the time range.
+        currency: The currency for the event values (e.g., "EUR", "USD").
         fetch_func: A callable function to fetch events. It should accept orchestrator address,
             start timestamp, and end timestamp as arguments and return a list of events.
         process_func: A callable function to process the fetched events. It should accept a list
@@ -855,273 +1147,6 @@ def fetch_and_process_events(
     else:
         print(f"No {event_name} found for the specified orchestrator and time range.")
         return pd.DataFrame()
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_gas_used_from_rpc(transaction_id: str) -> int:
-    """Retrieve the actual gas used for a transaction using Web3 and Arbitrum RPC.
-
-    Args:
-        transaction_id: The transaction ID.
-
-    Returns:
-        The gas used for the transaction.
-    """
-    receipt = ARB_CLIENT.eth.get_transaction_receipt(transaction_id)
-    return receipt["gasUsed"]
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_crypto_price(
-    crypto_symbol: str, target_currency: str, unix_timestamp: int
-) -> float:
-    """Fetch the historical price of a cryptocurrency in a specific currency at a
-    specific timestamp using the CryptoCompare API.
-
-    Args:
-        crypto_symbol: The cryptocurrency symbol (e.g., "ETH", "LPT").
-        target_currency: The target currency symbol (e.g., "EUR", "USD").
-        unix_timestamp: The Unix timestamp for the desired historical price.
-
-    Returns:
-        The price of the cryptocurrency in the target currency.
-    """
-    url = "https://min-api.cryptocompare.com/data/v2/histoday"
-    params = {
-        "fsym": crypto_symbol,
-        "tsym": target_currency,
-        "limit": 1,
-        "toTs": unix_timestamp,
-        "api_key": CRYPTO_COMPARE_API_KEY,
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()
-    return data["Data"]["Data"][-1]["close"]
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_transactions(
-    address: str,
-    start_block: int,
-    end_block: int,
-    sort: str = "asc",
-    action: str = "txlist",
-) -> list:
-    """Fetch transactions for a given address on the Arbitrum (Layer 2) chain using the Arbiscan API.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number.
-        end_block: The ending block number.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-        action: The type of transaction to fetch (e.g., 'txlist', 'tokentx', 'txlistinternal').
-
-    Returns:
-        A list of transactions.
-    """
-    all_transactions = []
-    processed_hashes = set()
-    max_records = 1000  # Free tier limit
-    current_start_block = start_block
-
-    while current_start_block <= end_block:
-        params = {
-            "chainid": 42161,
-            "module": "account",
-            "action": action,
-            "address": address,
-            "startblock": current_start_block,
-            "endblock": end_block,
-            "page": 1,
-            "offset": max_records,
-            "sort": sort,
-            "apikey": ARBISCAN_API_KEY_TOKEN,
-        }
-
-        try:
-            response = requests.get(ARBISCAN_ENDPOINT, params=params)
-            response.raise_for_status()
-            data = response.json()
-
-            if data["status"] == "1":
-                transactions = data["result"]
-
-                # Filter out duplicate transactions and add to final list.
-                new_transactions = [
-                    tx for tx in transactions if tx["hash"] not in processed_hashes
-                ]
-                all_transactions.extend(new_transactions)
-                processed_hashes.update(tx["hash"] for tx in new_transactions)
-
-                # If limit hit, set next start_block to last block - 1.
-                if len(transactions) == max_records:
-                    last_block_number = int(transactions[-1]["blockNumber"])
-                    current_start_block = last_block_number - 1
-                else:
-                    break
-            elif data["status"] == "0" and data["message"] == "No transactions found":
-                break
-            else:
-                raise Exception(f"Error fetching transactions: {data['message']}")
-        except Exception as e:
-            print(f"Error fetching transactions: {e}")
-            break
-    return all_transactions
-
-
-def fetch_arb_transactions(
-    address: str, start_block: int, end_block: int, sort: str = "asc"
-) -> list:
-    """Fetch normal transactions for a given address on the Arbitrum chain.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number.
-        end_block: The ending block number.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-    Returns:
-        A list of normal transactions.
-    """
-    return fetch_transactions(address, start_block, end_block, sort, action="txlist")
-
-
-def fetch_arb_token_transactions(
-    address: str, start_block: int, end_block: int, sort: str = "asc"
-) -> list:
-    """Fetch token transactions for a given address on the Arbitrum chain.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number.
-        end_block: The ending block number.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        A list of token transactions.
-    """
-    return fetch_transactions(address, start_block, end_block, sort, action="tokentx")
-
-
-def fetch_arb_internal_transactions(
-    address: str, start_block: int, end_block: int, sort: str = "asc"
-) -> list:
-    """Fetch internal transactions for a given address on the Arbitrum chain.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_block: The starting block number.
-        end_block: The ending block number.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        A list of internal transactions.
-    """
-    return fetch_transactions(
-        address, start_block, end_block, sort, action="txlistinternal"
-    )
-
-
-def fetch_arb_transactions_with_timestamps(
-    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
-) -> list:
-    """Fetch normal transactions for a given address within a specified time range.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        A list of normal transactions.
-    """
-    start_block = get_block_number_by_timestamp(start_timestamp)
-    end_block = get_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_transactions(address, start_block, end_block, sort)
-
-
-def fetch_arb_token_transactions_with_timestamps(
-    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
-) -> list:
-    """Fetch token transactions for a given address within a specified time range.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        A list of token transactions.
-    """
-    start_block = get_block_number_by_timestamp(start_timestamp)
-    end_block = get_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_token_transactions(address, start_block, end_block, sort)
-
-
-def fetch_arb_internal_transactions_with_timestamps(
-    address: str, start_timestamp: int, end_timestamp: int, sort: str = "asc"
-) -> list:
-    """Fetch internal transactions for a given address within a specified time range.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-        sort: The sorting order, either 'asc' or 'desc' (default: 'asc').
-
-    Returns:
-        A list of internal transactions.
-    """
-    start_block = get_block_number_by_timestamp(start_timestamp)
-    end_block = get_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_internal_transactions(address, start_block, end_block, sort)
-
-
-def fetch_all_transactions(
-    address: str, start_timestamp: int, end_timestamp: int
-) -> pd.DataFrame:
-    """Fetch all normal, internal, and token transactions for a given address and store
-    them in a DataFrame.
-
-    Args:
-        address: The wallet address to fetch transactions for.
-        start_timestamp: The start timestamp in Unix format.
-        end_timestamp: The end timestamp in Unix format.
-
-    Returns:
-        A Pandas DataFrame containing all transactions with consistent fields.
-    """
-    transaction_types = [
-        ("normal", fetch_arb_transactions_with_timestamps),
-        ("token", fetch_arb_token_transactions_with_timestamps),
-        ("internal", fetch_arb_internal_transactions_with_timestamps),
-    ]
-
-    combined_df = pd.DataFrame()
-
-    for transaction_type, fetch_func in transaction_types:
-        print(f"Fetching {transaction_type} transactions...")
-        transactions = fetch_func(address, start_timestamp, end_timestamp, sort="asc")
-        df = pd.DataFrame(transactions)
-        print(f"{transaction_type.capitalize()} transactions fetched: {len(df)}")
-        combined_df = pd.concat([combined_df, df], ignore_index=True)
-
-    print(f"Total transactions fetched: {len(combined_df)}")
-    return combined_df
 
 
 def merge_gas_info(
@@ -1172,7 +1197,7 @@ def infer_function_name(row: pd.Series, transactions_df: pd.DataFrame) -> str:
 
 
 def retrieve_token_and_eth_transfers(
-    transactions_df: pd.DataFrame, wallet_address: str
+    transactions_df: pd.DataFrame, wallet_address: str, currency: str
 ) -> pd.DataFrame:
     """Retrieve incoming/outgoing token (LPT) and ETH transfers, including their price
     in the specified currency, and infer missing function names.
@@ -1180,6 +1205,7 @@ def retrieve_token_and_eth_transfers(
     Args:
         transactions_df: A Pandas DataFrame containing all transactions.
         wallet_address: The wallet address to filter transactions for.
+        currency: The target currency for conversion (e.g., "EUR").
 
     Returns:
         A DataFrame with categorized token and ETH transfers, including their price in
@@ -1205,13 +1231,27 @@ def retrieve_token_and_eth_transfers(
                 token_filter & (transactions_df[column].str.lower() == wallet_address)
             ]
             for _, row in filtered_transactions.iterrows():
+                timestamp = datetime.fromtimestamp(
+                    int(row["timeStamp"]), tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                amount = int(row["value"]) / 10**18
+                price = fetch_crypto_price(
+                    token_symbol, currency, int(row["timeStamp"])
+                )
+                amount = float(row["value"]) / 10**18  # Convert wei to ETH
+                function_name = infer_function_name(row, transactions_df)
                 processed_rows.append(
                     {
-                        "timestamp": row["timeStamp"],
+                        "timestamp": timestamp,
                         "transaction hash": row["hash"],
+                        "transaction url": create_arbiscan_url(row["hash"]),
                         "direction": direction,
+                        "transaction type": "transfer",
                         "currency": token_symbol,
-                        "amount": row["value"],
+                        "amount": amount,
+                        f"price ({currency})": price,
+                        f"value ({currency})": amount * price,
+                        "source function": function_name,
                     }
                 )
     return pd.DataFrame(processed_rows)
@@ -1297,6 +1337,68 @@ def add_pending_stake_and_compounding_rewards(
     return reward_data
 
 
+def generate_overview_table(
+    reward_data: pd.DataFrame,
+    fee_data: pd.DataFrame,
+    total_gas_cost: float,
+    total_gas_cost_eur: float,
+    currency: str,
+) -> list:
+    """Generate an overview table with key metrics.
+
+    Args:
+        reward_data: DataFrame containing reward data.
+        fee_data: DataFrame containing fee data.
+        total_gas_cost: Total gas cost in ETH.
+        total_gas_cost_eur: Total gas cost in the specified currency.
+        currency: The currency for the overview table.
+
+    Returns:
+        A list of lists representing the overview table.
+    """
+    total_orchestrator_reward = reward_data["amount"].sum()
+    total_orchestrator_reward_value = reward_data[f"value ({currency})"].sum()
+    total_orchestrator_fees = fee_data["amount"].sum()
+    total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
+    total_compounding_rewards = reward_data["compounding rewards"].sum()
+    reward_data["compounding rewards (currency)"] = (
+        reward_data["compounding rewards"] * reward_data[f"price ({currency})"]
+    )
+    total_compounding_rewards_value = reward_data[
+        "compounding rewards (currency)"
+    ].sum()
+    total_value_accumulated = (
+        total_orchestrator_reward_value
+        + total_compounding_rewards_value
+        - total_gas_cost_eur
+    )
+
+    overview_table = [
+        ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.4f} LPT"],
+        [
+            f"Total Orchestrator Reward ({currency})",
+            f"{total_orchestrator_reward_value:.4f} {currency}",
+        ],
+        ["Total Orchestrator Fees (ETH)", f"{total_orchestrator_fees:.4f} ETH"],
+        [
+            f"Total Orchestrator Fees ({currency})",
+            f"{total_orchestrator_fees_value:.4f} {currency}",
+        ],
+        ["Total Gas Cost (ETH)", f"{total_gas_cost:.4f} ETH"],
+        [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.4f} {currency}"],
+        ["Total Compounding Rewards (LPT)", f"{total_compounding_rewards:.4f} LPT"],
+        [
+            f"Total Compounding Rewards ({currency})",
+            f"{total_compounding_rewards_value:.4f} {currency}",
+        ],
+        [
+            f"Total Value Accumulated ({currency})",
+            f"{total_value_accumulated:.4f} {currency}",
+        ],
+    ]
+    return overview_table
+
+
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
@@ -1311,19 +1413,49 @@ if __name__ == "__main__":
     currency = input("Enter currency (default: EUR): ").upper() or "EUR"
 
     reward_data = fetch_and_process_events(
-        fetch_reward_events, process_reward_events, "reward events"
+        orchestrator,
+        start_timestamp,
+        end_timestamp,
+        currency,
+        fetch_reward_events,
+        process_reward_events,
+        "reward events",
     )
     fee_data = fetch_and_process_events(
-        fetch_fee_events, process_fee_events, "fee events"
+        orchestrator,
+        start_timestamp,
+        end_timestamp,
+        currency,
+        fetch_fee_events,
+        process_fee_events,
+        "fee events",
     )
     bond_data = fetch_and_process_events(
-        fetch_bond_events, process_bond_events, "bond events"
+        orchestrator,
+        start_timestamp,
+        end_timestamp,
+        currency,
+        fetch_bond_events,
+        process_bond_events,
+        "bond events",
     )
     unbond_data = fetch_and_process_events(
-        fetch_unbond_events, process_unbond_events, "unbond events"
+        orchestrator,
+        start_timestamp,
+        end_timestamp,
+        currency,
+        fetch_unbond_events,
+        process_unbond_events,
+        "unbond events",
     )
     transfer_bond_data = fetch_and_process_events(
-        fetch_transfer_bond_events, process_transfer_bond_events, "transfer bond events"
+        orchestrator,
+        start_timestamp,
+        end_timestamp,
+        currency,
+        fetch_transfer_bond_events,
+        process_transfer_bond_events,
+        "transfer bond events",
     )
 
     print("\nFetching all wallet transactions...")
@@ -1364,53 +1496,15 @@ if __name__ == "__main__":
         orchestrator, reward_data, bond_data, unbond_data
     )
 
-    combined_data = pd.concat(
-        [reward_data, fee_data, bond_data, unbond_data, transfer_bond_data]
-    )
-
     print(f"\nOverview ({start_time} - {end_time}):")
-    total_orchestrator_reward = reward_data["amount"].sum()
-    total_orchestrator_reward_value = reward_data[f"value ({currency})"].sum()
-    total_orchestrator_fees = fee_data["amount"].sum()
-    total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
-    total_compounding_rewards = reward_data["compounding rewards"].sum()
-    reward_data["compounding rewards (currency)"] = (
-        reward_data["compounding rewards"] * reward_data[f"price ({currency})"]
+    overview_table = generate_overview_table(
+        reward_data, fee_data, total_gas_cost, total_gas_cost_eur, currency
     )
-    total_compounding_rewards_value = reward_data[
-        "compounding rewards (currency)"
-    ].sum()
-    total_value_accumulated = (
-        total_orchestrator_reward_value + total_compounding_rewards_value
-    )
-    overview_table = [
-        ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.4f} LPT"],
-        [
-            f"Total Orchestrator Reward ({currency})",
-            f"{total_orchestrator_reward_value:.4f} {currency}",
-        ],
-        ["Total Orchestrator Fees (ETH)", f"{total_orchestrator_fees:.4f} ETH"],
-        [
-            f"Total Orchestrator Fees ({currency})",
-            f"{total_orchestrator_fees_value:.4f} {currency}",
-        ],
-        ["Total Gas Cost (ETH)", f"{total_gas_cost:.4f} ETH"],
-        [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.4f} {currency}"],
-        ["Total Compounding Rewards (LPT)", f"{total_compounding_rewards:.4f} LPT"],
-        [
-            f"Total Compounding Rewards ({currency})",
-            f"{total_compounding_rewards_value:.4f} {currency}",
-        ],
-        [
-            f"Total Value Accumulated ({currency})",
-            f"{total_value_accumulated:.4f} {currency}",
-        ],
-    ]
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
     print("\nFetching token and ETH transfers...")
     token_and_eth_transfers = retrieve_token_and_eth_transfers(
-        transactions_df, orchestrator
+        transactions_df, orchestrator, currency
     )
 
     print("Add missing gas cost information to token and ETH transfers...")
