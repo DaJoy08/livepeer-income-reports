@@ -200,56 +200,21 @@ CSV_COLUMN_ORDER = [
 RPC_HISTORY_ERROR_DISPLAYED = False
 
 
-def build_query(base_query: str, where_clause: str, **kwargs) -> str:
-    """Build a GraphQL query by injecting the `where` clause and other placeholders.
+def build_where_clause(filters: dict) -> str:
+    """Convert a dictionary of filters into a GraphQL-compatible where clause string.
 
     Args:
-        base_query: The base query string with placeholders.
-        where_clause: The dynamically constructed `where` clause.
-        **kwargs: Additional placeholders to replace in the query.
+        filters: A dictionary of filters where keys are field names and values are
+            filter values.
 
     Returns:
-        A complete GraphQL query string.
+        A GraphQL-compatible string representation of the where clause.
     """
-    query = base_query.format(where_clause=where_clause, **kwargs)
-    return query
-
-
-def build_where_clause(
-    delegate: str = None,
-    recipient: str = None,
-    delegator: str = None,
-    start_timestamp: int = None,
-    end_timestamp: int = None,
-    round: int = None,
-) -> str:
-    """Build the `where` clause for a GraphQL query.
-
-    Args:
-        delegate: The address of the delegate (optional).
-        recipient: The address of the recipient (optional).
-        delegator: The address of the delegator (optional).
-        start_timestamp: The start timestamp for the time range (optional).
-        end_timestamp: The end timestamp for the time range (optional).
-        round: The round to filter events by (optional).
-
-    Returns:
-        A string representing the `where` clause for the GraphQL query.
-    """
-    clauses = []
-    if delegate:
-        clauses.append(f'delegate: "{delegate}"')
-    if recipient:
-        clauses.append(f'recipient: "{recipient}"')
-    if delegator:
-        clauses.append(f'delegator: "{delegator}"')
-    if start_timestamp:
-        clauses.append(f"timestamp_gte: {start_timestamp}")
-    if end_timestamp:
-        clauses.append(f"timestamp_lte: {end_timestamp}")
-    if round:
-        clauses.append(f'round_contains: "{round}"')
-    return ", ".join(clauses)
+    return ", ".join(
+        f'{key}: "{value}"' if isinstance(value, str) else f"{key}: {value}"
+        for key, value in filters.items()
+        if value is not None
+    )
 
 
 def filter_transactions_by_sender(
@@ -755,7 +720,11 @@ def fetch_all_transactions(
 
 
 def fetch_reward_events(
-    orchestrator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
+    orchestrator: str,
+    start_timestamp: int,
+    end_timestamp: int,
+    round: int = None,
+    page_size: int = 100,
 ) -> list[object]:
     """Fetch reward events for a given orchestrator within a specified time range.
 
@@ -763,23 +732,37 @@ def fetch_reward_events(
         orchestrator: The address of the orchestrator.
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
+        round: The round to filter events by (optional).
         page_size: The number of events to fetch per page (default: 100).
 
     Returns:
         A list of reward events.
     """
     where_clause = build_where_clause(
-        delegate=orchestrator,
-        start_timestamp=start_timestamp,
-        end_timestamp=end_timestamp,
+        {
+            "delegate": orchestrator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": round,
+        }
     )
-    query = build_query(REWARD_EVENTS_QUERY_BASE, where_clause, delegate=orchestrator)
     variables = {"first": page_size, "skip": 0}
-    return fetch_graphql_events(gql(query), variables, "rewardEvents")
+    query = REWARD_EVENTS_QUERY_BASE.format(
+        where_clause=where_clause, delegate=orchestrator
+    )
+    return fetch_graphql_events(
+        gql(query),
+        variables,
+        "rewardEvents",
+    )
 
 
 def fetch_fee_events(
-    recipient: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
+    recipient: str,
+    start_timestamp: int,
+    end_timestamp: int,
+    round: int = None,
+    page_size: int = 100,
 ) -> list[object]:
     """Fetch fee events for a given recipient within a specified time range.
 
@@ -787,21 +770,29 @@ def fetch_fee_events(
         recipient: The address of the recipient.
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
+        round: The round to filter events by (optional).
         page_size: The number of events to fetch per page (default: 100).
 
     Returns:
         A list of fee events.
     """
     where_clause = build_where_clause(
-        recipient=recipient,
-        start_timestamp=start_timestamp,
-        end_timestamp=end_timestamp,
-    )
-    query = build_query(
-        WINNING_TICKET_REDEEMED_EVENTS_QUERY_BASE, where_clause, recipient=recipient
+        {
+            "recipient": recipient,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": round,
+        }
     )
     variables = {"first": page_size, "skip": 0}
-    return fetch_graphql_events(gql(query), variables, "winningTicketRedeemedEvents")
+    query = WINNING_TICKET_REDEEMED_EVENTS_QUERY_BASE.format(
+        where_clause=where_clause, recipient=recipient
+    )
+    return fetch_graphql_events(
+        gql(query),
+        variables,
+        "winningTicketRedeemedEvents",
+    )
 
 
 def fetch_bond_events(
@@ -825,14 +816,20 @@ def fetch_bond_events(
         A list of bond events.
     """
     where_clause = build_where_clause(
-        delegator=delegator,
-        start_timestamp=start_timestamp,
-        end_timestamp=end_timestamp,
-        round=round,
+        {
+            "delegator": delegator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": round,
+        }
     )
-    query = build_query(BOND_EVENTS_QUERY_BASE, where_clause)
     variables = {"first": page_size, "skip": 0}
-    return fetch_graphql_events(gql(query), variables, "bondEvents")
+    query = BOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(
+        gql(query),
+        variables,
+        "bondEvents",
+    )
 
 
 def fetch_unbond_events(
@@ -856,18 +853,28 @@ def fetch_unbond_events(
         A list of unbond events.
     """
     where_clause = build_where_clause(
-        delegator=delegator,
-        start_timestamp=start_timestamp,
-        end_timestamp=end_timestamp,
-        round=round,
+        {
+            "delegator": delegator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": round,
+        }
     )
-    query = build_query(UNBOND_EVENTS_QUERY_BASE, where_clause)
     variables = {"first": page_size, "skip": 0}
-    return fetch_graphql_events(gql(query), variables, "unbondEvents")
+    query = UNBOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(
+        gql(query),
+        variables,
+        "unbondEvents",
+    )
 
 
 def fetch_transfer_bond_events(
-    delegator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
+    delegator: str,
+    start_timestamp: int,
+    end_timestamp: int,
+    round: int = None,
+    page_size: int = 100,
 ) -> list[object]:
     """Fetch transfer bond events for a given delegator within a specified time range.
 
@@ -875,21 +882,25 @@ def fetch_transfer_bond_events(
         delegator: The address of the delegator.
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
+        round: The round to filter events by (optional).
         page_size: The number of events to fetch per page (default: 100).
 
     Returns:
         A list of transfer bond events.
     """
-    variables = {
-        "delegator": delegator,
-        "startTimestamp": start_timestamp,
-        "endTimestamp": end_timestamp,
-        "first": page_size,
-        "skip": 0,
+    base_filters = {
+        "timestamp_gte": start_timestamp,
+        "timestamp_lte": end_timestamp,
+        "round": round,
     }
-    return fetch_graphql_events(
-        TRANSFER_BOND_EVENTS_QUERY_BASE, variables, "transferBondEvents"
-    )
+    or_conditions = [
+        f'{{oldDelegator: "{delegator}", {build_where_clause(base_filters)}}}',
+        f'{{newDelegator: "{delegator}", {build_where_clause(base_filters)}}}',
+    ]
+    where_clause = f"or: [{', '.join(or_conditions)}]"
+    variables = {"first": page_size, "skip": 0}
+    query = TRANSFER_BOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(gql(query), variables, "transferBondEvents")
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -1092,6 +1103,9 @@ def process_transfer_bond_events(
         transaction_url = create_arbiscan_url(transaction)
         amount = float(event["amount"])
         transaction_type = "reward transfer"
+        direction = (
+            "incoming" if event["newDelegator"]["id"] == orchestrator else "outgoing"
+        )
 
         lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
         value_currency = amount * lpt_price
@@ -1103,7 +1117,7 @@ def process_transfer_bond_events(
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
-                "direction": "outgoing" if event["oldDelegator"] else "incoming",
+                "direction": direction,
                 "currency": "LPT",
                 "amount": amount,
                 f"price ({currency})": lpt_price,
@@ -1521,9 +1535,16 @@ if __name__ == "__main__":
 
     overview_df = pd.DataFrame(overview_table, columns=["Metric", "Value"])
 
-    print("\nExporting data to Excel with two tabs...")
+    print("\nExporting data to Excel...")
     with ExcelWriter("orchestrator_income.xlsx") as writer:
         overview_df.to_excel(writer, sheet_name="overview", index=False)
-        combined_df.to_excel(writer, sheet_name="transactions", index=False)
+
+        lpt_transactions = combined_df[combined_df["currency"] == "LPT"]
+        lpt_transactions.to_excel(writer, sheet_name="LPT_transactions", index=False)
+
+        eth_transactions = combined_df[combined_df["currency"] == "ETH"]
+        eth_transactions.to_excel(writer, sheet_name="ETH_transactions", index=False)
+
+        combined_df.to_excel(writer, sheet_name="all_transactions", index=False)
 
     print("Excel export completed.")
