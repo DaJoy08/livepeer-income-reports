@@ -389,24 +389,6 @@ def fetch_starting_lpt_balance(wallet_address: str, block_hash: str) -> float:
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
-def fetch_gas_used_from_rpc(transaction_id: str) -> int:
-    """Retrieve the actual gas used for a transaction using Web3 and Arbitrum RPC.
-
-    Args:
-        transaction_id: The transaction ID.
-
-    Returns:
-        The gas used for the transaction.
-    """
-    receipt = ARB_CLIENT.eth.get_transaction_receipt(transaction_id)
-    return receipt["gasUsed"]
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
 def fetch_block_number_by_timestamp(timestamp: int, closest: str = "before") -> int:
     """Fetch the block number for a given timestamp using the Arbiscan API.
 
@@ -671,7 +653,13 @@ def fetch_arb_transactions(
     Returns:
         A list of normal transactions.
     """
-    return fetch_transactions(address, start_block, end_block, sort, action="txlist")
+    return fetch_transactions(
+        address=address,
+        start_block=start_block,
+        end_block=end_block,
+        sort=sort,
+        action="txlist",
+    )
 
 
 def fetch_arb_token_transactions(
@@ -688,7 +676,13 @@ def fetch_arb_token_transactions(
     Returns:
         A list of token transactions.
     """
-    return fetch_transactions(address, start_block, end_block, sort, action="tokentx")
+    return fetch_transactions(
+        address=address,
+        start_block=start_block,
+        end_block=end_block,
+        sort=sort,
+        action="tokentx",
+    )
 
 
 def fetch_arb_internal_transactions(
@@ -706,7 +700,11 @@ def fetch_arb_internal_transactions(
         A list of internal transactions.
     """
     return fetch_transactions(
-        address, start_block, end_block, sort, action="txlistinternal"
+        address=address,
+        start_block=start_block,
+        end_block=end_block,
+        sort=sort,
+        action="txlistinternal",
     )
 
 
@@ -724,9 +722,11 @@ def fetch_arb_transactions_with_timestamps(
     Returns:
         A list of normal transactions.
     """
-    start_block = fetch_block_number_by_timestamp(start_timestamp)
-    end_block = fetch_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_transactions(address, start_block, end_block, sort)
+    start_block = fetch_block_number_by_timestamp(timestamp=start_timestamp)
+    end_block = fetch_block_number_by_timestamp(timestamp=end_timestamp)
+    return fetch_arb_transactions(
+        address=address, start_block=start_block, end_block=end_block, sort=sort
+    )
 
 
 def fetch_arb_token_transactions_with_timestamps(
@@ -743,9 +743,11 @@ def fetch_arb_token_transactions_with_timestamps(
     Returns:
         A list of token transactions.
     """
-    start_block = fetch_block_number_by_timestamp(start_timestamp)
-    end_block = fetch_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_token_transactions(address, start_block, end_block, sort)
+    start_block = fetch_block_number_by_timestamp(timestamp=start_timestamp)
+    end_block = fetch_block_number_by_timestamp(timestamp=end_timestamp)
+    return fetch_arb_token_transactions(
+        address=address, start_block=start_block, end_block=end_block, sort=sort
+    )
 
 
 def fetch_arb_internal_transactions_with_timestamps(
@@ -762,9 +764,11 @@ def fetch_arb_internal_transactions_with_timestamps(
     Returns:
         A list of internal transactions.
     """
-    start_block = fetch_block_number_by_timestamp(start_timestamp)
-    end_block = fetch_block_number_by_timestamp(end_timestamp)
-    return fetch_arb_internal_transactions(address, start_block, end_block, sort)
+    start_block = fetch_block_number_by_timestamp(timestamp=start_timestamp)
+    end_block = fetch_block_number_by_timestamp(timestamp=end_timestamp)
+    return fetch_arb_internal_transactions(
+        address=address, start_block=start_block, end_block=end_block, sort=sort
+    )
 
 
 def fetch_all_transactions(
@@ -832,9 +836,9 @@ def fetch_reward_events(
         where_clause=where_clause, delegate=orchestrator
     )
     return fetch_graphql_events(
-        gql(query),
-        variables,
-        "rewardEvents",
+        query=gql(query),
+        variables=variables,
+        event_key="rewardEvents",
     )
 
 
@@ -870,9 +874,9 @@ def fetch_fee_events(
         where_clause=where_clause, recipient=recipient
     )
     return fetch_graphql_events(
-        gql(query),
-        variables,
-        "winningTicketRedeemedEvents",
+        query=gql(query),
+        variables=variables,
+        event_key="winningTicketRedeemedEvents",
     )
 
 
@@ -907,9 +911,9 @@ def fetch_bond_events(
     variables = {"first": page_size, "skip": 0}
     query = BOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
     return fetch_graphql_events(
-        gql(query),
-        variables,
-        "bondEvents",
+        query=gql(query),
+        variables=variables,
+        event_key="bondEvents",
     )
 
 
@@ -944,9 +948,9 @@ def fetch_unbond_events(
     variables = {"first": page_size, "skip": 0}
     query = UNBOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
     return fetch_graphql_events(
-        gql(query),
-        variables,
-        "unbondEvents",
+        query=gql(query),
+        variables=variables,
+        event_key="unbondEvents",
     )
 
 
@@ -981,7 +985,9 @@ def fetch_transfer_bond_events(
     where_clause = f"or: [{', '.join(or_conditions)}]"
     variables = {"first": page_size, "skip": 0}
     query = TRANSFER_BOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
-    return fetch_graphql_events(gql(query), variables, "transferBondEvents")
+    return fetch_graphql_events(
+        query=gql(query), variables=variables, event_key="transferBondEvents"
+    )
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -1007,7 +1013,11 @@ def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
         orchestrator_reward = reward_cut * pool_reward
         transaction_type = "reward cut"
 
-        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
         value_currency = orchestrator_reward * lpt_price
 
         rows.append(
@@ -1053,7 +1063,11 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
         orch_fee = (1 - fee_share) * face_value
         transaction_type = "fee cut"
 
-        eth_price = fetch_crypto_price("ETH", currency, event["timestamp"])
+        eth_price = fetch_crypto_price(
+            crypto_symbol="ETH",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
         value_currency = orch_fee * eth_price
 
         rows.append(
@@ -1097,7 +1111,11 @@ def process_bond_events(bond_events: list, currency: str) -> pd.DataFrame:
         amount = float(event["amount"])
         transaction_type = "bond"
 
-        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
         value_currency = amount * lpt_price
 
         rows.append(
@@ -1139,7 +1157,11 @@ def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
         amount = float(event["amount"])
         transaction_type = "unbond"
 
-        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
         value_currency = amount * lpt_price
 
         rows.append(
@@ -1188,7 +1210,11 @@ def process_transfer_bond_events(
             "incoming" if event["newDelegator"]["id"] == orchestrator else "outgoing"
         )
 
-        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
         value_currency = amount * lpt_price
 
         rows.append(
@@ -1335,10 +1361,14 @@ def retrieve_token_and_eth_transfers(
                 ).strftime("%Y-%m-%d %H:%M:%S")
                 amount = int(row["value"]) / 10**18
                 price = fetch_crypto_price(
-                    token_symbol, currency, int(row["timeStamp"])
+                    crypto_symbol=token_symbol,
+                    target_currency=currency,
+                    unix_timestamp=int(row["timeStamp"]),
                 )
                 amount = float(row["value"]) / 10**18
-                function_name = infer_function_name(row, transactions_df)
+                function_name = infer_function_name(
+                    row=row, transactions_df=transactions_df
+                )
                 processed_rows.append(
                     {
                         "timestamp": timestamp,
@@ -1384,22 +1414,25 @@ def add_pending_stake_and_compounding_rewards(
         fetch_block_hash_for_round
     )
     reward_data["pending stake"] = reward_data.progress_apply(
-        lambda row: fetch_pending_stake(orchestrator, row["blockHash"]), axis=1
+        lambda row: fetch_pending_stake(
+            orchestrator=orchestrator, block_hash=row["blockHash"]
+        ),
+        axis=1,
     )
 
     # Fetch data for the round before the first reward round.
     first_reward_round = int(reward_data["round"].iloc[0])
     previous_round = first_reward_round - 1
     previous_pending_stake = fetch_pending_stake(
-        orchestrator, fetch_block_hash_for_round(previous_round)
+        orchestrator=orchestrator, block_hash=fetch_block_hash_for_round(previous_round)
     )
     prev_bond = sum(
         event["amount"]
-        for event in fetch_bond_events(orchestrator, round=previous_round)
+        for event in fetch_bond_events(delegator=orchestrator, round=previous_round)
     )
     prev_unbond = sum(
         event["amount"]
-        for event in fetch_unbond_events(orchestrator, round=previous_round)
+        for event in fetch_unbond_events(delegator=orchestrator, round=previous_round)
     )
 
     print("Calculating expected pending stake and compounding rewards...")
@@ -1584,9 +1617,9 @@ if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
     start_time = input("Enter data range start (YYYY-MM-DD HH:MM:SS): ")
-    start_timestamp = human_to_unix_time(start_time)
+    start_timestamp = human_to_unix_time(human_time=start_time)
     end_time = input("Enter data range end (YYYY-MM-DD HH:MM:SS): ")
-    end_timestamp = human_to_unix_time(end_time)
+    end_timestamp = human_to_unix_time(human_time=end_time)
     orchestrator = input("Enter orchestrator address: ").lower()
     if not orchestrator:
         print("Orchestrator address is required.")
@@ -1594,16 +1627,32 @@ if __name__ == "__main__":
     currency = input("Enter currency (default: EUR): ").upper() or "EUR"
 
     print("\nFetching start and end balances...")
-    start_block_hash = fetch_block_number_by_timestamp(start_timestamp)
-    end_block_hash = fetch_block_number_by_timestamp(end_timestamp)
-    starting_eth_balance = fetch_starting_eth_balance(orchestrator, start_block_hash)
-    starting_lpt_balance = fetch_starting_lpt_balance(orchestrator, start_block_hash)
-    end_eth_balance = fetch_starting_eth_balance(orchestrator, end_block_hash)
-    end_lpt_balance = fetch_starting_lpt_balance(orchestrator, end_block_hash)
-    start_eth_price = fetch_crypto_price("ETH", currency, start_timestamp)
-    start_lpt_price = fetch_crypto_price("LPT", currency, start_timestamp)
-    end_eth_price = fetch_crypto_price("ETH", currency, end_timestamp)
-    end_lpt_price = fetch_crypto_price("LPT", currency, end_timestamp)
+    start_block_hash = fetch_block_number_by_timestamp(timestamp=start_timestamp)
+    end_block_hash = fetch_block_number_by_timestamp(timestamp=end_timestamp)
+    starting_eth_balance = fetch_starting_eth_balance(
+        wallet_address=orchestrator, block_hash=start_block_hash
+    )
+    starting_lpt_balance = fetch_starting_lpt_balance(
+        wallet_address=orchestrator, block_hash=start_block_hash
+    )
+    end_eth_balance = fetch_starting_eth_balance(
+        wallet_address=orchestrator, block_hash=end_block_hash
+    )
+    end_lpt_balance = fetch_starting_lpt_balance(
+        wallet_address=orchestrator, block_hash=end_block_hash
+    )
+    start_eth_price = fetch_crypto_price(
+        crypto_symbol="ETH", target_currency=currency, unix_timestamp=start_timestamp
+    )
+    start_lpt_price = fetch_crypto_price(
+        crypto_symbol="LPT", target_currency=currency, unix_timestamp=start_timestamp
+    )
+    end_eth_price = fetch_crypto_price(
+        crypto_symbol="ETH", target_currency=currency, unix_timestamp=end_timestamp
+    )
+    end_lpt_price = fetch_crypto_price(
+        crypto_symbol="LPT", target_currency=currency, unix_timestamp=end_timestamp
+    )
     starting_eth_value = starting_eth_balance * start_eth_price
     starting_lpt_value = starting_lpt_balance * start_lpt_price
     end_eth_value = end_eth_balance * end_eth_price
@@ -1626,65 +1675,67 @@ if __name__ == "__main__":
     )
 
     reward_data = fetch_and_process_events(
-        orchestrator,
-        start_timestamp,
-        end_timestamp,
-        currency,
-        fetch_reward_events,
-        process_reward_events,
-        "reward events",
+        orchestrator=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_reward_events,
+        process_func=process_reward_events,
+        event_name="reward events",
     )
     fee_data = fetch_and_process_events(
-        orchestrator,
-        start_timestamp,
-        end_timestamp,
-        currency,
-        fetch_fee_events,
-        process_fee_events,
-        "fee events",
+        orchestrator=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_fee_events,
+        process_func=process_fee_events,
+        event_name="fee events",
     )
     bond_data = fetch_and_process_events(
-        orchestrator,
-        start_timestamp,
-        end_timestamp,
-        currency,
-        fetch_bond_events,
-        process_bond_events,
-        "bond events",
+        orchestrator=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_bond_events,
+        process_func=process_bond_events,
+        event_name="bond events",
     )
     unbond_data = fetch_and_process_events(
-        orchestrator,
-        start_timestamp,
-        end_timestamp,
-        currency,
-        fetch_unbond_events,
-        process_unbond_events,
-        "unbond events",
+        orchestrator=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_unbond_events,
+        process_func=process_unbond_events,
+        event_name="unbond events",
     )
     transfer_bond_data = fetch_and_process_events(
-        orchestrator,
-        start_timestamp,
-        end_timestamp,
-        currency,
-        fetch_transfer_bond_events,
-        process_transfer_bond_events,
-        "transfer bond events",
+        orchestrator=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_transfer_bond_events,
+        process_func=process_transfer_bond_events,
+        event_name="transfer bond events",
     )
 
     print("\nFetching all wallet transactions...")
     transactions_df = fetch_all_transactions(
-        orchestrator, start_timestamp, end_timestamp
+        address=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
     )
 
     print("Filtering transactions by sending address...")
     transactions_with_gas_info_df = filter_transactions_by_sender(
-        transactions_df, orchestrator
+        df=transactions_df, wallet_address=orchestrator
     )
     print(f"Total transactions found: {len(transactions_with_gas_info_df)}")
 
     print("\nFetching gas cost information...")
     transactions_with_gas_info_df = add_gas_cost_information(
-        transactions_with_gas_info_df, currency
+        df=transactions_with_gas_info_df, currency=currency
     )
 
     transactions_with_gas_info_df.rename(
@@ -1700,45 +1751,60 @@ if __name__ == "__main__":
     ).sum()
 
     print("Merging gas information into processed data...")
-    reward_data = merge_gas_info(reward_data, transactions_with_gas_info_df, currency)
-    fee_data = merge_gas_info(fee_data, transactions_with_gas_info_df, currency)
-    bond_data = merge_gas_info(bond_data, transactions_with_gas_info_df, currency)
-    unbond_data = merge_gas_info(unbond_data, transactions_with_gas_info_df, currency)
+    reward_data = merge_gas_info(
+        data=reward_data, gas_info_df=transactions_with_gas_info_df, currency=currency
+    )
+    fee_data = merge_gas_info(
+        data=fee_data, gas_info_df=transactions_with_gas_info_df, currency=currency
+    )
+    bond_data = merge_gas_info(
+        data=bond_data, gas_info_df=transactions_with_gas_info_df, currency=currency
+    )
+    unbond_data = merge_gas_info(
+        data=unbond_data, gas_info_df=transactions_with_gas_info_df, currency=currency
+    )
     transfer_bond_data = merge_gas_info(
-        transfer_bond_data, transactions_with_gas_info_df, currency
+        data=transfer_bond_data,
+        gas_info_df=transactions_with_gas_info_df,
+        currency=currency,
     )
 
     print("\nAdding pending stake and compounding rewards info to reward data...")
     reward_data = add_pending_stake_and_compounding_rewards(
-        orchestrator, reward_data, bond_data, unbond_data
+        orchestrator=orchestrator,
+        reward_data=reward_data,
+        bond_events=bond_data,
+        unbond_events=unbond_data,
     )
 
     print(f"\nOverview ({start_time} - {end_time}):")
     overview_table = generate_overview_table(
-        reward_data,
-        fee_data,
-        total_gas_cost,
-        total_gas_cost_eur,
-        currency,
-        starting_eth_balance,
-        starting_eth_value,
-        starting_lpt_balance,
-        starting_lpt_value,
-        end_eth_balance,
-        end_eth_value,
-        end_lpt_balance,
-        end_lpt_value,
+        reward_data=reward_data,
+        fee_data=fee_data,
+        total_gas_cost=total_gas_cost,
+        total_gas_cost_eur=total_gas_cost_eur,
+        currency=currency,
+        starting_eth_balance=starting_eth_balance,
+        starting_eth_value=starting_eth_value,
+        starting_lpt_balance=starting_lpt_balance,
+        starting_lpt_value=starting_lpt_value,
+        end_eth_balance=end_eth_balance,
+        end_eth_value=end_eth_value,
+        end_lpt_balance=end_lpt_balance,
+        end_lpt_value=end_lpt_value,
     )
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
     print("\nFetching token and ETH transfers...")
     token_and_eth_transfers = retrieve_token_and_eth_transfers(
-        transactions_df, orchestrator, currency
+        transactions_df=transactions_df, wallet_address=orchestrator, currency=currency
     )
 
     print("Add missing gas cost information to token and ETH transfers...")
     token_and_eth_transfers = merge_gas_info(
-        token_and_eth_transfers, transactions_with_gas_info_df, currency
+        data=token_and_eth_transfers,
+        gas_info_df=transactions_with_gas_info_df,
+        currency=currency,
     )
 
     # Exit early if no data was found.
@@ -1757,7 +1823,9 @@ if __name__ == "__main__":
 
     print("Adding cumulative balances to the combined DataFrame...")
     combined_df = add_cumulative_balances(
-        combined_df, starting_eth_balance, starting_lpt_balance
+        combined_df=combined_df,
+        starting_eth_balance=starting_eth_balance,
+        starting_lpt_balance=starting_lpt_balance,
     )
 
     print("\nExporting data to Excel...")
