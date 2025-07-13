@@ -723,7 +723,7 @@ def fetch_reward_events(
     orchestrator: str,
     start_timestamp: int,
     end_timestamp: int,
-    round: int = None,
+    round: str | int = None,
     page_size: int = 100,
 ) -> list[object]:
     """Fetch reward events for a given orchestrator within a specified time range.
@@ -743,7 +743,7 @@ def fetch_reward_events(
             "delegate": orchestrator,
             "timestamp_gte": start_timestamp,
             "timestamp_lte": end_timestamp,
-            "round": round,
+            "round": str(round) if round is not None else None,
         }
     )
     variables = {"first": page_size, "skip": 0}
@@ -761,7 +761,7 @@ def fetch_fee_events(
     recipient: str,
     start_timestamp: int,
     end_timestamp: int,
-    round: int = None,
+    round: str | int = None,
     page_size: int = 100,
 ) -> list[object]:
     """Fetch fee events for a given recipient within a specified time range.
@@ -781,7 +781,7 @@ def fetch_fee_events(
             "recipient": recipient,
             "timestamp_gte": start_timestamp,
             "timestamp_lte": end_timestamp,
-            "round": round,
+            "round": str(round) if round is not None else None,
         }
     )
     variables = {"first": page_size, "skip": 0}
@@ -799,7 +799,7 @@ def fetch_bond_events(
     delegator: str,
     start_timestamp: int = None,
     end_timestamp: int = None,
-    round: int = None,
+    round: str | int = None,
     page_size: int = 100,
 ) -> list[object]:
     """Fetch bond events for a given delegator within a specified time range or
@@ -820,7 +820,7 @@ def fetch_bond_events(
             "delegator": delegator,
             "timestamp_gte": start_timestamp,
             "timestamp_lte": end_timestamp,
-            "round": round,
+            "round": str(round) if round is not None else None,
         }
     )
     variables = {"first": page_size, "skip": 0}
@@ -836,7 +836,7 @@ def fetch_unbond_events(
     delegator: str,
     start_timestamp: int = None,
     end_timestamp: int = None,
-    round: int = None,
+    round: str | int = None,
     page_size: int = 100,
 ) -> list[object]:
     """Fetch unbond events for a given delegator within a specified time range or
@@ -857,7 +857,7 @@ def fetch_unbond_events(
             "delegator": delegator,
             "timestamp_gte": start_timestamp,
             "timestamp_lte": end_timestamp,
-            "round": round,
+            "round": str(round) if round is not None else None,
         }
     )
     variables = {"first": page_size, "skip": 0}
@@ -873,7 +873,7 @@ def fetch_transfer_bond_events(
     delegator: str,
     start_timestamp: int,
     end_timestamp: int,
-    round: int = None,
+    round: str | int = None,
     page_size: int = 100,
 ) -> list[object]:
     """Fetch transfer bond events for a given delegator within a specified time range.
@@ -891,7 +891,7 @@ def fetch_transfer_bond_events(
     base_filters = {
         "timestamp_gte": start_timestamp,
         "timestamp_lte": end_timestamp,
-        "round": round,
+        "round": str(round) if round is not None else None,
     }
     or_conditions = [
         f'{{oldDelegator: "{delegator}", {build_where_clause(base_filters)}}}',
@@ -1411,6 +1411,7 @@ def generate_overview_table(
         ],
     ]
     return overview_table
+
 
 
 if __name__ == "__main__":
