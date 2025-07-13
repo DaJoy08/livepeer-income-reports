@@ -1386,23 +1386,18 @@ def retrieve_token_and_eth_transfers(
     return pd.DataFrame(processed_rows)
 
 
-def add_pending_stake_and_compounding_rewards(
+def add_pending_stake(
     orchestrator: str,
     reward_data: pd.DataFrame,
-    bond_events: pd.DataFrame,
-    unbond_events: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Add pending stake and compounding rewards information for each round in which a
-    reward was received.
+    """Add pending stake information for each round in which a reward was received.
 
     Args:
         orchestrator: The address of the orchestrator.
         reward_data: A DataFrame containing reward event data.
-        bond_events: A DataFrame of bond events (can be empty).
-        unbond_events: A DataFrame of unbond events (can be empty).
 
     Returns:
-        A DataFrame with additional columns for pending stake and compounding rewards.
+        A DataFrame with an additional column for pending stake.
     """
     if reward_data.empty:
         print("No reward data available to process.")
@@ -1419,6 +1414,31 @@ def add_pending_stake_and_compounding_rewards(
         ),
         axis=1,
     )
+
+    return reward_data
+
+
+def add_compounding_rewards(
+    orchestrator: str,
+    reward_data: pd.DataFrame,
+    bond_events: pd.DataFrame,
+    unbond_events: pd.DataFrame,
+) -> pd.DataFrame:
+    """Calculate compounding rewards for each round in which a reward was received.
+
+    Args:
+        orchestrator: The address of the orchestrator.
+        reward_data: A DataFrame containing reward event data with pending stake.
+        bond_events: A DataFrame of bond events (can be empty).
+        unbond_events: A DataFrame of unbond events (can be empty).
+
+    Returns:
+        A DataFrame with an additional column for compounding rewards.
+    """
+    if reward_data.empty:
+        print("No reward data available to process.")
+        return reward_data
+    reward_data = reward_data.copy()
 
     # Fetch data for the round before the first reward round.
     first_reward_round = int(reward_data["round"].iloc[0])
@@ -1769,8 +1789,14 @@ if __name__ == "__main__":
         currency=currency,
     )
 
-    print("\nAdding pending stake and compounding rewards info to reward data...")
-    reward_data = add_pending_stake_and_compounding_rewards(
+    print("\nAdding pending stake to data...")
+    reward_data = add_pending_stake(
+        orchestrator=orchestrator,
+        reward_data=reward_data,
+    )
+
+    print("\nCalculating compounding rewards...")
+    reward_data = add_compounding_rewards(
         orchestrator=orchestrator,
         reward_data=reward_data,
         bond_events=bond_data,
