@@ -1,10 +1,13 @@
 """Retrieve and export orchestrator income data for tax reporting as a CSV file.
 
 Upstream Improvements:
-- Fix gas used on subgrap (see https://github.com/livepeer/subgraph/pull/164).
+- Fix gasUsed on graph (see https://github.com/livepeer/subgraph/pull/164).
+- PendingStake on graph for orchs (see https://github.com/livepeer/subgraph/pull/165).
+- Have PendingStake respect round parameter (see https://github.com/livepeer/protocol/blob/e8b6243c48d9db33852310d2aefedd5b1c77b8b6/contracts/bonding/BondingManager.sol#L932).
 
-TODO:
-    - Add compounding rewards.
+# TODO:
+    - Add LPT and ETH graphs to showcase (rewards, compounding rewards, transfers).
+    - Fix compounding stake to use (unbond, bond, and transfer bond methods).
 """
 
 import os
@@ -26,6 +29,7 @@ import requests
 from tabulate import tabulate
 from tqdm import tqdm
 from typing import Callable
+import json
 
 tqdm.pandas()
 
@@ -54,118 +58,122 @@ GRAPHQL_CLIENT = Client(transport=TRANSPORT, fetch_schema_from_transport=True)
 
 ARB_CLIENT = Web3(Web3.HTTPProvider(ARB_RPC_URL, request_kwargs={"timeout": 60}))
 
+BONDING_MANAGER_CONTRACT_ADDRESS = "0x35Bcf3c30594191d53231E4FF333E8A770453e40"
+ROUNDS_MANAGER_CONTRACT_ADDRESS = "0xdd6f56DcC28D3F5f27084381fE8Df634985cc39f"
 
-REWARD_EVENTS_QUERY = gql(
-    """
-query RewardEvents(
-  $orchestrator: String!
-  $startTimestamp: Int!
-  $endTimestamp: Int!
-  $first: Int!
-  $skip: Int!
-) {
+with open("ABI/BondingManager.json", "r") as bonding_manager_abi_file:
+    BONDING_MANAGER_ABI = json.load(bonding_manager_abi_file)
+with open("ABI/RoundsManager.json", "r") as rounds_manager_abi_file:
+    ROUNDS_MANAGER_ABI = json.load(rounds_manager_abi_file)
+
+REWARD_EVENTS_QUERY_BASE = """
+query RewardEvents($first: Int!, $skip: Int!) {{
   rewardEvents(
-    where: {
-      delegate: $orchestrator
-      timestamp_gte: $startTimestamp
-      timestamp_lte: $endTimestamp
-    }
+    where: {{ {where_clause} }}
     first: $first
     skip: $skip
     orderBy: round__startBlock
     orderDirection: asc
-  ) {
+  ) {{
     id
     timestamp
-    transaction {
+    transaction {{
       id
-      gasPrice
-      gasUsed
-    }
+    }}
     rewardTokens
-    round {
+    round {{
       id
-      pools(where: { delegate: $orchestrator }) {
+      pools(where: {{ delegate: "{delegate}" }}) {{
         rewardCut
-      }
-    }
-  }
-}
+      }}
+    }}
+  }}
+}}
 """
-)
-WINNING_TICKET_REDEEMED_EVENTS_QUERY = gql(
-    """
-query WinningTicketRedeemedEvents(
-  $recipient: String!
-  $startTimestamp: Int!
-  $endTimestamp: Int!
-  $first: Int!
-  $skip: Int!
-) {
+WINNING_TICKET_REDEEMED_EVENTS_QUERY_BASE = """
+query WinningTicketRedeemedEvents($first: Int!, $skip: Int!) {{
   winningTicketRedeemedEvents(
-    where: {
-      recipient: $recipient
-      timestamp_gte: $startTimestamp
-      timestamp_lte: $endTimestamp
-    }
+    where: {{ {where_clause} }}
     first: $first
     skip: $skip
     orderBy: timestamp
     orderDirection: asc
-  ) {
+  ) {{
     id
     timestamp
-    transaction {
+    transaction {{
       id
-      gasPrice
-      gasUsed
-    }
+    }}
     faceValue
-    round {
+    round {{
       id
-      pools(where: { delegate: $recipient }) {
+      pools(where: {{ delegate: "{recipient}" }}) {{
         feeShare
-      }
-    }
-  }
-}
+      }}
+    }}
+  }}
+}}
 """
-)
-TRANSFER_BOND_EVENTS_QUERY = gql(
-    """
-query TransferBondEvents(
-  $oldDelegator: String!
-  $startTimestamp: Int!
-  $endTimestamp: Int!
-) {
-  transferBondEvents(
-    where: {
-      oldDelegator: $oldDelegator
-      timestamp_gte: $startTimestamp
-      timestamp_lte: $endTimestamp
-    }
-  ) {
+BOND_EVENTS_QUERY_BASE = """
+query BondEvents($first: Int!, $skip: Int!) {{
+  bondEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+  ) {{
+    timestamp
+    additionalAmount
+    round {{
+      id
+    }}
+    transaction {{
+      id
+    }}
+  }}
+}}
+"""
+UNBOND_EVENTS_QUERY_BASE = """
+query UnbondEvents($first: Int!, $skip: Int!) {{
+  unbondEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+  ) {{
     timestamp
     amount
-    round {
+    round {{
       id
-    }
-    oldDelegator {
+    }}
+    transaction {{
       id
-    }
-    newDelegator {
-      id
-    }
-    transaction {
-      id
-      gasPrice
-      gasUsed
-    }
-  }
-}
+    }}
+  }}
+}}
 """
-)
-
+TRANSFER_BOND_EVENTS_QUERY_BASE = """
+query TransferBondEvents($first: Int!, $skip: Int!) {{
+  transferBondEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+  ) {{
+    timestamp
+    amount
+    round {{
+      id
+    }}
+    oldDelegator {{
+      id
+    }}
+    newDelegator {{
+      id
+    }}
+    transaction {{
+      id
+    }}
+  }}
+}}
+"""
 
 CSV_COLUMN_ORDER = [
     "timestamp",
@@ -185,7 +193,64 @@ CSV_COLUMN_ORDER = [
     "face value",
     "fee share",
     "source function",
+    "pending stake",
+    "compounding rewards",
 ]
+
+
+RPC_HISTORY_ERROR_DISPLAYED = False
+
+
+def build_query(base_query: str, where_clause: str, **kwargs) -> str:
+    """Build a GraphQL query by injecting the `where` clause and other placeholders.
+
+    Args:
+        base_query: The base query string with placeholders.
+        where_clause: The dynamically constructed `where` clause.
+        **kwargs: Additional placeholders to replace in the query.
+
+    Returns:
+        A complete GraphQL query string.
+    """
+    query = base_query.format(where_clause=where_clause, **kwargs)
+    return query
+
+
+def build_where_clause(
+    delegate: str = None,
+    recipient: str = None,
+    delegator: str = None,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: int = None,
+) -> str:
+    """Build the `where` clause for a GraphQL query.
+
+    Args:
+        delegate: The address of the delegate (optional).
+        recipient: The address of the recipient (optional).
+        delegator: The address of the delegator (optional).
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+
+    Returns:
+        A string representing the `where` clause for the GraphQL query.
+    """
+    clauses = []
+    if delegate:
+        clauses.append(f'delegate: "{delegate}"')
+    if recipient:
+        clauses.append(f'recipient: "{recipient}"')
+    if delegator:
+        clauses.append(f'delegator: "{delegator}"')
+    if start_timestamp:
+        clauses.append(f"timestamp_gte: {start_timestamp}")
+    if end_timestamp:
+        clauses.append(f"timestamp_lte: {end_timestamp}")
+    if round:
+        clauses.append(f'round_contains: "{round}"')
+    return ", ".join(clauses)
 
 
 def filter_transactions_by_sender(
@@ -201,6 +266,28 @@ def filter_transactions_by_sender(
         A DataFrame of filtered transactions where the wallet is the sender.
     """
     return df[df["from"].str.lower() == wallet_address.lower()]
+
+
+def fetch_block_hash_for_round(round_number: str | int) -> str:
+    """Fetch the block hash for a specific round using the RoundsManager contract.
+
+    Args:
+        round_number: The round number.
+
+    Returns:
+        str: The block hash as a hexadecimal string.
+    """
+    try:
+        rounds_manager_contract = ARB_CLIENT.eth.contract(
+            address=ROUNDS_MANAGER_CONTRACT_ADDRESS, abi=ROUNDS_MANAGER_ABI
+        )
+        block_hash = rounds_manager_contract.functions.blockHashForRound(
+            int(round_number)
+        ).call()
+        return Web3.to_hex(block_hash)
+    except Exception as e:
+        print(f"Error fetching block hash for round {round_number}: {e}")
+        return None
 
 
 def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.DataFrame:
@@ -360,14 +447,14 @@ def fetch_reward_events(
     Returns:
         A list of reward events.
     """
-    variables = {
-        "orchestrator": orchestrator,
-        "startTimestamp": start_timestamp,
-        "endTimestamp": end_timestamp,
-        "first": page_size,
-        "skip": 0,
-    }
-    return fetch_graphql_events(REWARD_EVENTS_QUERY, variables, "rewardEvents")
+    where_clause = build_where_clause(
+        delegate=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+    )
+    query = build_query(REWARD_EVENTS_QUERY_BASE, where_clause, delegate=orchestrator)
+    variables = {"first": page_size, "skip": 0}
+    return fetch_graphql_events(gql(query), variables, "rewardEvents")
 
 
 def fetch_fee_events(
@@ -384,25 +471,87 @@ def fetch_fee_events(
     Returns:
         A list of fee events.
     """
-    variables = {
-        "recipient": recipient,
-        "startTimestamp": start_timestamp,
-        "endTimestamp": end_timestamp,
-        "first": page_size,
-        "skip": 0,
-    }
-    return fetch_graphql_events(
-        WINNING_TICKET_REDEEMED_EVENTS_QUERY, variables, "winningTicketRedeemedEvents"
+    where_clause = build_where_clause(
+        recipient=recipient,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
     )
+    query = build_query(
+        WINNING_TICKET_REDEEMED_EVENTS_QUERY_BASE, where_clause, recipient=recipient
+    )
+    variables = {"first": page_size, "skip": 0}
+    return fetch_graphql_events(gql(query), variables, "winningTicketRedeemedEvents")
+
+
+def fetch_bond_events(
+    delegator: str,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: int = None,
+    page_size: int = 100,
+) -> list[object]:
+    """Fetch bond events for a given delegator within a specified time range or
+    round.
+
+    Args:
+        delegator: The address of the delegator.
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+        page_size: The number of events to fetch per page (default: 100).
+
+    Returns:
+        A list of bond events.
+    """
+    where_clause = build_where_clause(
+        delegator=delegator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        round=round,
+    )
+    query = build_query(BOND_EVENTS_QUERY_BASE, where_clause)
+    variables = {"first": page_size, "skip": 0}
+    return fetch_graphql_events(gql(query), variables, "bondEvents")
+
+
+def fetch_unbond_events(
+    delegator: str,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: int = None,
+    page_size: int = 100,
+) -> list[object]:
+    """Fetch unbond events for a given delegator within a specified time range or
+    round.
+
+    Args:
+        delegator: The address of the delegator.
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+        page_size: The number of events to fetch per page (default: 100).
+
+    Returns:
+        A list of unbond events.
+    """
+    where_clause = build_where_clause(
+        delegator=delegator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        round=round,
+    )
+    query = build_query(UNBOND_EVENTS_QUERY_BASE, where_clause)
+    variables = {"first": page_size, "skip": 0}
+    return fetch_graphql_events(gql(query), variables, "unbondEvents")
 
 
 def fetch_transfer_bond_events(
-    old_delegator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
+    delegator: str, start_timestamp: int, end_timestamp: int, page_size: int = 100
 ) -> list[object]:
-    """Fetch transfer bond events for a given old delegator within a specified time range.
+    """Fetch transfer bond events for a given delegator within a specified time range.
 
     Args:
-        old_delegator: The address of the old delegator.
+        delegator: The address of the delegator.
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
         page_size: The number of events to fetch per page (default: 100).
@@ -411,15 +560,51 @@ def fetch_transfer_bond_events(
         A list of transfer bond events.
     """
     variables = {
-        "oldDelegator": old_delegator,
+        "delegator": delegator,
         "startTimestamp": start_timestamp,
         "endTimestamp": end_timestamp,
         "first": page_size,
         "skip": 0,
     }
     return fetch_graphql_events(
-        TRANSFER_BOND_EVENTS_QUERY, variables, "transferBondEvents"
+        TRANSFER_BOND_EVENTS_QUERY_BASE, variables, "transferBondEvents"
     )
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
+    """Fetch the pending stake for a given orchestrator at a specific block hash.
+
+    Args:
+        orchestrator: The address of the orchestrator.
+        block_hash: The block hash to fetch the pending stake at.
+
+    Returns:
+        The pending stake for the orchestrator at the specified block hash.
+    """
+    try:
+        checksum_address = Web3.to_checksum_address(orchestrator)
+        bonding_manager_contract = ARB_CLIENT.eth.contract(
+            address=BONDING_MANAGER_CONTRACT_ADDRESS, abi=BONDING_MANAGER_ABI
+        )
+        pending_stake = bonding_manager_contract.functions.pendingStake(
+            checksum_address, 0
+        ).call(block_identifier=block_hash)
+        return pending_stake / 10**18
+    except Exception as e:
+        if "missing trie node" in str(e) and not RPC_HISTORY_ERROR_DISPLAYED:
+            print(
+                "\033[93mWarning: RPC node lacks historical data for pendingStake. "
+                "Switch to an archive node provider like Infura or Alchemy.\033[0m"
+            )
+            RPC_HISTORY_ERROR_DISPLAYED = True
+        else:
+            print(f"Error fetching pending stake for block hash {block_hash}: {e}")
+        return None
 
 
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
@@ -437,6 +622,7 @@ def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
         transaction = event["transaction"]["id"]
         transaction_url = create_arbiscan_url(transaction)
         pool_reward = float(event["rewardTokens"])
@@ -450,7 +636,7 @@ def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
         rows.append(
             {
                 "timestamp": timestamp,
-                "round": event["round"]["id"],
+                "round": round_id,
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
@@ -482,6 +668,7 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
         transaction = event["transaction"]["id"]
         transaction_url = create_arbiscan_url(transaction)
         face_value = float(event["faceValue"])
@@ -495,7 +682,7 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
         rows.append(
             {
                 "timestamp": timestamp,
-                "round": event["round"]["id"],
+                "round": round_id,
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
@@ -507,6 +694,90 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
                 f"price ({currency})": eth_price,
                 f"value ({currency})": value_currency,
                 "source function": "redeemWinningTicket",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def process_bond_events(bond_events: list, currency: str) -> pd.DataFrame:
+    """Process bond events and integrate transferBond events.
+
+    Args:
+        bond_events: A list of bond events.
+        currency: The currency for the bond values (e.g., "EUR", "USD").
+
+    Returns:
+        A Pandas DataFrame representing the bond data.
+    """
+    rows = []
+    for event in tqdm(bond_events, desc="Processing bond events", unit="event"):
+        timestamp = datetime.fromtimestamp(
+            event["timestamp"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
+        amount = float(event["amount"])
+        transaction_type = "bond"
+
+        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        value_currency = amount * lpt_price
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "round": round_id,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
+                "transaction type": transaction_type,
+                "direction": "incoming",
+                "currency": "LPT",
+                "amount": amount,
+                f"price ({currency})": lpt_price,
+                f"value ({currency})": value_currency,
+                "source function": "bond",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
+    """Process unbond events and create a DataFrame with relevant information.
+
+    Args:
+        unbond_events: A list of unbond events.
+        currency: The currency for the unbond values (e.g., "EUR", "USD").
+
+    Returns:
+        A Pandas DataFrame representing the unbond data.
+    """
+    rows = []
+    for event in tqdm(unbond_events, desc="Processing unbond events", unit="event"):
+        timestamp = datetime.fromtimestamp(
+            event["timestamp"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
+        amount = float(event["amount"])
+        transaction_type = "unbond"
+
+        lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
+        value_currency = amount * lpt_price
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "round": round_id,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
+                "transaction type": transaction_type,
+                "direction": "outgoing",
+                "currency": "LPT",
+                "amount": amount,
+                f"price ({currency})": lpt_price,
+                f"value ({currency})": value_currency,
+                "source function": "unbond",
             }
         )
     return pd.DataFrame(rows)
@@ -531,11 +802,11 @@ def process_transfer_bond_events(
         timestamp = datetime.fromtimestamp(
             event["timestamp"], tz=timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
         transaction = event["transaction"]["id"]
         transaction_url = create_arbiscan_url(transaction)
         amount = float(event["amount"])
         transaction_type = "reward transfer"
-        transaction_category = "outward"
 
         lpt_price = fetch_crypto_price("LPT", currency, event["timestamp"])
         value_currency = amount * lpt_price
@@ -543,13 +814,11 @@ def process_transfer_bond_events(
         rows.append(
             {
                 "timestamp": timestamp,
-                "round": event["round"]["id"],
+                "round": round_id,
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
-                "direction": transaction_category,
-                "from": event["oldDelegator"]["id"],
-                "to": event["newDelegator"]["id"],
+                "direction": "outgoing" if event["oldDelegator"] else "incoming",
                 "currency": "LPT",
                 "amount": amount,
                 f"price ({currency})": lpt_price,
@@ -560,6 +829,7 @@ def process_transfer_bond_events(
     return pd.DataFrame(rows)
 
 
+# TODO: Depends on global vars.
 def fetch_and_process_events(
     fetch_func: Callable[[str, int, int], list],
     process_func: Callable[[list, str], pd.DataFrame],
@@ -581,7 +851,6 @@ def fetch_and_process_events(
     events = fetch_func(orchestrator, start_timestamp, end_timestamp)
     if events:
         print(f"Found {len(events)} {event_name}.")
-        print(f"Processing {event_name}...")
         return process_func(events, currency)
     else:
         print(f"No {event_name} found for the specified orchestrator and time range.")
@@ -903,7 +1172,7 @@ def infer_function_name(row: pd.Series, transactions_df: pd.DataFrame) -> str:
 
 
 def retrieve_token_and_eth_transfers(
-    transactions_df: pd.DataFrame, wallet_address: str, currency: str
+    transactions_df: pd.DataFrame, wallet_address: str
 ) -> pd.DataFrame:
     """Retrieve incoming/outgoing token (LPT) and ETH transfers, including their price
     in the specified currency, and infer missing function names.
@@ -911,38 +1180,121 @@ def retrieve_token_and_eth_transfers(
     Args:
         transactions_df: A Pandas DataFrame containing all transactions.
         wallet_address: The wallet address to filter transactions for.
-        currency: The target currency for conversion (e.g., "EUR").
 
     Returns:
         A DataFrame with categorized token and ETH transfers, including their price in
         the specified currency.
     """
+    if "tokenSymbol" not in transactions_df.columns:
+        transactions_df["tokenSymbol"] = None
+
     wallet_address = wallet_address.lower()
     processed_rows = []
 
-    def process_transactions(transactions, transaction_category, token_symbol):
-        for _, row in transactions.iterrows():
-            processed_rows.append(
-                {
-                    "timestamp": row["timeStamp"],
-                    "transaction hash": row["hash"],
-                    "direction": transaction_category,
-                    "currency": token_symbol,
-                    "amount": row["value"],
-                }
-            )
-
-    for token_symbol in ["LPT", "ETH"]:
+    # Process LPT and ETH transactions.
+    for token_symbol, token_filter in [
+        ("LPT", transactions_df["tokenSymbol"] == "LPT"),
+        (
+            "ETH",
+            transactions_df["tokenSymbol"].isna()
+            & (transactions_df["value"].astype(float) > 0),
+        ),
+    ]:
         for direction, column in [("incoming", "to"), ("outgoing", "from")]:
-            process_transactions(
-                transactions_df[
-                    (transactions_df["tokenSymbol"] == token_symbol)
-                    & (transactions_df[column].str.lower() == wallet_address)
-                ],
-                direction,
-                token_symbol,
-            )
+            filtered_transactions = transactions_df[
+                token_filter & (transactions_df[column].str.lower() == wallet_address)
+            ]
+            for _, row in filtered_transactions.iterrows():
+                processed_rows.append(
+                    {
+                        "timestamp": row["timeStamp"],
+                        "transaction hash": row["hash"],
+                        "direction": direction,
+                        "currency": token_symbol,
+                        "amount": row["value"],
+                    }
+                )
     return pd.DataFrame(processed_rows)
+
+
+def add_pending_stake_and_compounding_rewards(
+    orchestrator: str,
+    reward_data: pd.DataFrame,
+    bond_events: pd.DataFrame,
+    unbond_events: pd.DataFrame,
+) -> pd.DataFrame:
+    """Add pending stake and compounding rewards information for each round in which a
+    reward was received.
+
+    Args:
+        orchestrator: The address of the orchestrator.
+        reward_data: A DataFrame containing reward event data.
+        bond_events: A DataFrame of bond events (can be empty).
+        unbond_events: A DataFrame of unbond events (can be empty).
+
+    Returns:
+        A DataFrame with additional columns for pending stake and compounding rewards.
+    """
+    reward_data = reward_data.copy()
+
+    print("Fetching block hashes and pending stakes...")
+    reward_data["blockHash"] = reward_data["round"].progress_apply(
+        fetch_block_hash_for_round
+    )
+    reward_data["pending stake"] = reward_data.progress_apply(
+        lambda row: fetch_pending_stake(orchestrator, row["blockHash"]), axis=1
+    )
+
+    # Fetch data for the round before the first reward round.
+    first_reward_round = int(reward_data["round"].iloc[0])
+    previous_round = first_reward_round - 1
+    previous_pending_stake = fetch_pending_stake(
+        orchestrator, fetch_block_hash_for_round(previous_round)
+    )
+    prev_bond = sum(
+        event["amount"]
+        for event in fetch_bond_events(orchestrator, round=previous_round)
+    )
+    prev_unbond = sum(
+        event["amount"]
+        for event in fetch_unbond_events(orchestrator, round=previous_round)
+    )
+
+    print("Calculating expected pending stake and compounding rewards...")
+    reward_data["compounding rewards"] = 0.0
+    for i, row in tqdm(
+        reward_data.iterrows(), total=len(reward_data), desc="Processing rewards"
+    ):
+        current_round = row["round"]
+        reward = row["amount"]
+
+        # Get bond and unbond totals for the current round.
+        current_bond = (
+            bond_events[bond_events["round"] == current_round]["amount"].sum()
+            if not bond_events.empty
+            else 0
+        )
+        current_unbond = (
+            unbond_events[unbond_events["round"] == current_round]["amount"].sum()
+            if not unbond_events.empty
+            else 0
+        )
+
+        # Retrieve the previous stake.
+        previous_stake = (
+            previous_pending_stake
+            if i == 0
+            else reward_data.loc[i - 1, "pending stake"]
+        )
+
+        # Calculate the expected pending stake and compounding rewards.
+        expected_pending_stake = previous_stake + reward - prev_unbond + prev_bond
+        reward_data.at[i, "compounding rewards"] = (
+            row["pending stake"] - expected_pending_stake
+        )
+
+        prev_bond, prev_unbond = current_bond, current_unbond
+    return reward_data
 
 
 if __name__ == "__main__":
@@ -964,22 +1316,28 @@ if __name__ == "__main__":
     fee_data = fetch_and_process_events(
         fetch_fee_events, process_fee_events, "fee events"
     )
+    bond_data = fetch_and_process_events(
+        fetch_bond_events, process_bond_events, "bond events"
+    )
+    unbond_data = fetch_and_process_events(
+        fetch_unbond_events, process_unbond_events, "unbond events"
+    )
     transfer_bond_data = fetch_and_process_events(
         fetch_transfer_bond_events, process_transfer_bond_events, "transfer bond events"
     )
 
-    print("\nFetch all wallet transactions...")
+    print("\nFetching all wallet transactions...")
     transactions_df = fetch_all_transactions(
         orchestrator, start_timestamp, end_timestamp
     )
 
-    print("Filter transactions by sending address...")
+    print("Filtering transactions by sending address...")
     transactions_with_gas_info_df = filter_transactions_by_sender(
         transactions_df, orchestrator
     )
     print(f"Total transactions found: {len(transactions_with_gas_info_df)}")
 
-    print("\nAdd gas cost information to transactions")
+    print("\nFetching gas cost information...")
     transactions_with_gas_info_df = add_gas_cost_information(
         transactions_with_gas_info_df, currency
     )
@@ -988,24 +1346,43 @@ if __name__ == "__main__":
         columns={"hash": "transaction hash"}, inplace=True
     )
 
-    print("Calculate total gas fees paid by orchestrator...")
+    print("Calculating total gas fees paid by orchestrator...")
     total_gas_cost = transactions_with_gas_info_df["gas cost (ETH)"].sum()
     total_gas_cost_eur = transactions_with_gas_info_df[f"gas cost ({currency})"].sum()
 
     print("Merging gas information into processed data...")
     reward_data = merge_gas_info(reward_data, transactions_with_gas_info_df, currency)
     fee_data = merge_gas_info(fee_data, transactions_with_gas_info_df, currency)
+    bond_data = merge_gas_info(bond_data, transactions_with_gas_info_df, currency)
+    unbond_data = merge_gas_info(unbond_data, transactions_with_gas_info_df, currency)
     transfer_bond_data = merge_gas_info(
         transfer_bond_data, transactions_with_gas_info_df, currency
     )
 
-    combined_data = pd.concat([reward_data, fee_data, transfer_bond_data])
+    print("\nAdding pending stake and compounding rewards info to reward data...")
+    reward_data = add_pending_stake_and_compounding_rewards(
+        orchestrator, reward_data, bond_data, unbond_data
+    )
+
+    combined_data = pd.concat(
+        [reward_data, fee_data, bond_data, unbond_data, transfer_bond_data]
+    )
 
     print(f"\nOverview ({start_time} - {end_time}):")
     total_orchestrator_reward = reward_data["amount"].sum()
     total_orchestrator_reward_value = reward_data[f"value ({currency})"].sum()
     total_orchestrator_fees = fee_data["amount"].sum()
     total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
+    total_compounding_rewards = reward_data["compounding rewards"].sum()
+    reward_data["compounding rewards (currency)"] = (
+        reward_data["compounding rewards"] * reward_data[f"price ({currency})"]
+    )
+    total_compounding_rewards_value = reward_data[
+        "compounding rewards (currency)"
+    ].sum()
+    total_value_accumulated = (
+        total_orchestrator_reward_value + total_compounding_rewards_value
+    )
     overview_table = [
         ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.4f} LPT"],
         [
@@ -1019,12 +1396,21 @@ if __name__ == "__main__":
         ],
         ["Total Gas Cost (ETH)", f"{total_gas_cost:.4f} ETH"],
         [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.4f} {currency}"],
+        ["Total Compounding Rewards (LPT)", f"{total_compounding_rewards:.4f} LPT"],
+        [
+            f"Total Compounding Rewards ({currency})",
+            f"{total_compounding_rewards_value:.4f} {currency}",
+        ],
+        [
+            f"Total Value Accumulated ({currency})",
+            f"{total_value_accumulated:.4f} {currency}",
+        ],
     ]
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
-    print("\nRetrieve token and ETH transfers...")
+    print("\nFetching token and ETH transfers...")
     token_and_eth_transfers = retrieve_token_and_eth_transfers(
-        transactions_df, orchestrator, currency
+        transactions_df, orchestrator
     )
 
     print("Add missing gas cost information to token and ETH transfers...")
