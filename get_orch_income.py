@@ -4,9 +4,6 @@ Upstream Improvements:
 - Fix gasUsed on graph (see https://github.com/livepeer/subgraph/pull/164).
 - PendingStake on graph for orchs (see https://github.com/livepeer/subgraph/pull/165).
 - Have PendingStake respect round parameter (see https://github.com/livepeer/protocol/blob/e8b6243c48d9db33852310d2aefedd5b1c77b8b6/contracts/bonding/BondingManager.sol#L932).
-
-# TODO:
-    - Add LPT and ETH graphs to showcase (rewards, compounding rewards, transfers).
 """
 
 import os
@@ -59,11 +56,24 @@ ARB_CLIENT = Web3(Web3.HTTPProvider(ARB_RPC_URL, request_kwargs={"timeout": 60})
 
 BONDING_MANAGER_CONTRACT_ADDRESS = "0x35Bcf3c30594191d53231E4FF333E8A770453e40"
 ROUNDS_MANAGER_CONTRACT_ADDRESS = "0xdd6f56DcC28D3F5f27084381fE8Df634985cc39f"
+LPT_TOKEN_CONTRACT_ADDRESS = "0x289ba1701C2F088cf0faf8B3705246331cB8A839"
 
 with open("ABI/BondingManager.json", "r") as bonding_manager_abi_file:
     BONDING_MANAGER_ABI = json.load(bonding_manager_abi_file)
 with open("ABI/RoundsManager.json", "r") as rounds_manager_abi_file:
     ROUNDS_MANAGER_ABI = json.load(rounds_manager_abi_file)
+with open("ABI/LivepeerToken.json", "r") as lpt_token_abi_file:
+    LPT_TOKEN_ABI = json.load(lpt_token_abi_file)
+
+BONDING_MANAGER_CONTRACT = ARB_CLIENT.eth.contract(
+    address=BONDING_MANAGER_CONTRACT_ADDRESS, abi=BONDING_MANAGER_ABI
+)
+ROUNDS_MANAGER_CONTRACT = ARB_CLIENT.eth.contract(
+    address=ROUNDS_MANAGER_CONTRACT_ADDRESS, abi=ROUNDS_MANAGER_ABI
+)
+LPT_TOKEN_CONTRACT = ARB_CLIENT.eth.contract(
+    address=LPT_TOKEN_CONTRACT_ADDRESS, abi=LPT_TOKEN_ABI
+)
 
 REWARD_EVENTS_QUERY_BASE = """
 query RewardEvents($first: Int!, $skip: Int!) {{
@@ -194,6 +204,8 @@ CSV_COLUMN_ORDER = [
     "pool reward",
     "face value",
     "source function",
+    "cumulative balance (ETH)",
+    "cumulative balance (LPT)",
 ]
 
 
@@ -229,6 +241,9 @@ def filter_transactions_by_sender(
     Returns:
         A DataFrame of filtered transactions where the wallet is the sender.
     """
+    if df.empty:
+        print("No transactions found for the specified wallet address.")
+        return pd.DataFrame()
     return df[df["from"].str.lower() == wallet_address.lower()]
 
 
@@ -244,6 +259,9 @@ def add_gas_cost_information(df: pd.DataFrame, currency: str = "EUR") -> pd.Data
         The updated DataFrame with gas cost information added.
     """
     df = df.copy()
+    if df.empty:
+        print("No transactions found to calculate gas costs.")
+        return df
 
     def calculate_gas_cost_currency(row):
         """Calculate gas cost in the specified currency."""
@@ -301,6 +319,69 @@ def create_arbiscan_url(transaction_id: str) -> str:
         A string representing the Arbiscan URL for the transaction.
     """
     return f"https://arbiscan.io/tx/{transaction_id}"
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_starting_eth_balance(wallet_address: str, block_hash: str) -> float:
+    """Fetch the ETH balance of a wallet at a specific block.
+
+    Args:
+        wallet_address: The wallet address to check.
+        block_hash: The block hash to fetch the balance at.
+
+    Returns:
+        The ETH balance of the wallet at the specified block, in ETH units.
+        Returns 0.0 if an error occurs.
+    """
+    try:
+        checksum_address = Web3.to_checksum_address(wallet_address)
+        balance_wei = ARB_CLIENT.eth.get_balance(
+            checksum_address, block_identifier=block_hash
+        )
+        return balance_wei / 10**18
+    except Exception as e:
+        print(
+            f"Error fetching ETH balance for {wallet_address} at block {block_hash}: "
+            f"{e}"
+        )
+        return 0.0
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_starting_lpt_balance(wallet_address: str, block_hash: str) -> float:
+    """Fetch the starting unbonded LPT balance of a wallet at a specific block.
+
+    Args:
+        wallet_address: The wallet address to check.
+        block_hash: The block hash to fetch the balance at.
+
+    Returns:
+        The LPT balance of the wallet at the specified block, in LPT units.
+        Returns 0.0 if an error occurs.
+    """
+    try:
+        checksum_address = Web3.to_checksum_address(wallet_address)
+        lpt_contract = ARB_CLIENT.eth.contract(
+            address=LPT_TOKEN_CONTRACT_ADDRESS, abi=LPT_TOKEN_ABI
+        )
+        balance = lpt_contract.functions.balanceOf(checksum_address).call(
+            block_identifier=block_hash
+        )
+        return balance / 10**18
+    except Exception as e:
+        print(
+            f"Error fetching LPT balance for {wallet_address} at block {block_hash}: "
+            f"{e}"
+        )
+        return 0.0
 
 
 @retry(
@@ -1225,6 +1306,10 @@ def retrieve_token_and_eth_transfers(
         A DataFrame with categorized token and ETH transfers, including their price in
         the specified currency.
     """
+    if transactions_df.empty:
+        print("No transactions available to process.")
+        return pd.DataFrame()
+
     if "tokenSymbol" not in transactions_df.columns:
         transactions_df["tokenSymbol"] = None
 
@@ -1252,7 +1337,7 @@ def retrieve_token_and_eth_transfers(
                 price = fetch_crypto_price(
                     token_symbol, currency, int(row["timeStamp"])
                 )
-                amount = float(row["value"]) / 10**18  # Convert wei to ETH
+                amount = float(row["value"]) / 10**18
                 function_name = infer_function_name(row, transactions_df)
                 processed_rows.append(
                     {
@@ -1289,6 +1374,9 @@ def add_pending_stake_and_compounding_rewards(
     Returns:
         A DataFrame with additional columns for pending stake and compounding rewards.
     """
+    if reward_data.empty:
+        print("No reward data available to process.")
+        return reward_data
     reward_data = reward_data.copy()
 
     print("Fetching block hashes and pending stakes...")
@@ -1351,12 +1439,58 @@ def add_pending_stake_and_compounding_rewards(
     return reward_data
 
 
+def add_cumulative_balances(
+    combined_df: pd.DataFrame,
+    starting_eth_balance: float,
+    starting_lpt_balance: float,
+) -> pd.DataFrame:
+    """Add cumulative ETH and LPT balances to the DataFrame based on the starting
+    balances.
+
+    Args:
+        combined_df: A DataFrame containing transaction data with 'amount', 'currency',
+            and 'direction' columns.
+        starting_eth_balance: The starting ETH balance.
+        starting_lpt_balance: The starting LPT balance.
+
+    Returns:
+        A DataFrame with additional columns for cumulative ETH and LPT balances.
+    """
+    combined_df["cumulative balance (ETH)"] = (
+        combined_df.apply(
+            lambda row: (
+                row["amount"]
+                if row["currency"] == "ETH" and row["direction"] == "incoming"
+                else (
+                    -row["amount"]
+                    if row["currency"] == "ETH" and row["direction"] == "outgoing"
+                    else 0
+                )
+            ),
+            axis=1,
+        ).cumsum()
+        + starting_eth_balance
+    )
+    combined_df["cumulative balance (LPT)"] = (
+        combined_df["pending stake"] + starting_lpt_balance
+    )
+    return combined_df
+
+
 def generate_overview_table(
     reward_data: pd.DataFrame,
     fee_data: pd.DataFrame,
     total_gas_cost: float,
     total_gas_cost_eur: float,
     currency: str,
+    starting_eth_balance: float,
+    starting_eth_value: float,
+    starting_lpt_balance: float,
+    starting_lpt_value: float,
+    end_eth_balance: float,
+    end_eth_value: float,
+    end_lpt_balance: float,
+    end_lpt_value: float,
 ) -> list:
     """Generate an overview table with key metrics.
 
@@ -1366,21 +1500,38 @@ def generate_overview_table(
         total_gas_cost: Total gas cost in ETH.
         total_gas_cost_eur: Total gas cost in the specified currency.
         currency: The currency for the overview table.
+        starting_eth_balance: The starting ETH balance.
+        starting_eth_value: The starting ETH value in the specified currency.
+        starting_lpt_balance: The starting LPT balance.
+        starting_lpt_value: The starting LPT value in the specified currency.
+        end_eth_balance: The ending ETH balance.
+        end_eth_value: The ending ETH value in the specified currency.
+        end_lpt_balance: The ending LPT balance.
+        end_lpt_value: The ending LPT value in the specified currency.
 
     Returns:
         A list of lists representing the overview table.
     """
-    total_orchestrator_reward = reward_data["amount"].sum()
-    total_orchestrator_reward_value = reward_data[f"value ({currency})"].sum()
-    total_orchestrator_fees = fee_data["amount"].sum()
-    total_orchestrator_fees_value = fee_data[f"value ({currency})"].sum()
-    total_compounding_rewards = reward_data["compounding rewards"].sum()
-    reward_data["compounding rewards (currency)"] = (
-        reward_data["compounding rewards"] * reward_data[f"price ({currency})"]
-    )
-    total_compounding_rewards_value = reward_data[
-        "compounding rewards (currency)"
-    ].sum()
+    reward_data = reward_data.copy()
+    fee_data = fee_data.copy()
+
+    total_orchestrator_reward = reward_data.get("amount", pd.Series(0)).sum()
+    total_orchestrator_reward_value = reward_data.get(
+        f"value ({currency})", pd.Series(0)
+    ).sum()
+    total_orchestrator_fees = fee_data.get("amount", pd.Series(0)).sum()
+    total_orchestrator_fees_value = fee_data.get(
+        f"value ({currency})", pd.Series(0)
+    ).sum()
+    total_compounding_rewards = reward_data.get(
+        "compounding rewards", pd.Series(0)
+    ).sum()
+    reward_data["compounding rewards (currency)"] = reward_data.get(
+        "compounding rewards", pd.Series(0)
+    ) * reward_data.get(f"price ({currency})", pd.Series(0))
+    total_compounding_rewards_value = reward_data.get(
+        "compounding rewards (currency)", pd.Series(0)
+    ).sum()
     total_value_accumulated = (
         total_orchestrator_reward_value
         + total_compounding_rewards_value
@@ -1388,6 +1539,22 @@ def generate_overview_table(
     )
 
     overview_table = [
+        [
+            "Starting ETH Balance",
+            f"{starting_eth_balance:.4f} ETH ({starting_eth_value:.2f} {currency})",
+        ],
+        [
+            "Starting LPT Balance",
+            f"{starting_lpt_balance:.4f} LPT ({starting_lpt_value:.2f} {currency})",
+        ],
+        [
+            "Ending ETH Balance",
+            f"{end_eth_balance:.4f} ETH ({end_eth_value:.2f} {currency})",
+        ],
+        [
+            "Ending LPT Balance",
+            f"{end_lpt_balance:.4f} LPT ({end_lpt_value:.2f} {currency})",
+        ],
         ["Total Orchestrator Reward (LPT)", f"{total_orchestrator_reward:.4f} LPT"],
         [
             f"Total Orchestrator Reward ({currency})",
@@ -1413,7 +1580,6 @@ def generate_overview_table(
     return overview_table
 
 
-
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
@@ -1426,6 +1592,38 @@ if __name__ == "__main__":
         print("Orchestrator address is required.")
         sys.exit(1)
     currency = input("Enter currency (default: EUR): ").upper() or "EUR"
+
+    print("\nFetching start and end balances...")
+    start_block_hash = fetch_block_number_by_timestamp(start_timestamp)
+    end_block_hash = fetch_block_number_by_timestamp(end_timestamp)
+    starting_eth_balance = fetch_starting_eth_balance(orchestrator, start_block_hash)
+    starting_lpt_balance = fetch_starting_lpt_balance(orchestrator, start_block_hash)
+    end_eth_balance = fetch_starting_eth_balance(orchestrator, end_block_hash)
+    end_lpt_balance = fetch_starting_lpt_balance(orchestrator, end_block_hash)
+    start_eth_price = fetch_crypto_price("ETH", currency, start_timestamp)
+    start_lpt_price = fetch_crypto_price("LPT", currency, start_timestamp)
+    end_eth_price = fetch_crypto_price("ETH", currency, end_timestamp)
+    end_lpt_price = fetch_crypto_price("LPT", currency, end_timestamp)
+    starting_eth_value = starting_eth_balance * start_eth_price
+    starting_lpt_value = starting_lpt_balance * start_lpt_price
+    end_eth_value = end_eth_balance * end_eth_price
+    end_lpt_value = end_lpt_balance * end_lpt_price
+    print(
+        f"Starting ETH Balance: {starting_eth_balance:.4f} ETH "
+        f"({starting_eth_value:.2f} {currency})"
+    )
+    print(
+        f"Ending ETH Balance: {end_eth_balance:.4f} ETH "
+        f"({end_eth_value:.2f} {currency})"
+    )
+    print(
+        f"Starting LPT Balance: {starting_lpt_balance:.4f} LPT "
+        f"({starting_lpt_value:.2f} {currency})"
+    )
+    print(
+        f"Ending LPT Balance: {end_lpt_balance:.4f} LPT "
+        f"({end_lpt_value:.2f} {currency})"
+    )
 
     reward_data = fetch_and_process_events(
         orchestrator,
@@ -1494,8 +1692,12 @@ if __name__ == "__main__":
     )
 
     print("Calculating total gas fees paid by orchestrator...")
-    total_gas_cost = transactions_with_gas_info_df["gas cost (ETH)"].sum()
-    total_gas_cost_eur = transactions_with_gas_info_df[f"gas cost ({currency})"].sum()
+    total_gas_cost = transactions_with_gas_info_df.get(
+        "gas cost (ETH)", pd.Series(0)
+    ).sum()
+    total_gas_cost_eur = transactions_with_gas_info_df.get(
+        f"gas cost ({currency})", pd.Series(0)
+    ).sum()
 
     print("Merging gas information into processed data...")
     reward_data = merge_gas_info(reward_data, transactions_with_gas_info_df, currency)
@@ -1513,7 +1715,19 @@ if __name__ == "__main__":
 
     print(f"\nOverview ({start_time} - {end_time}):")
     overview_table = generate_overview_table(
-        reward_data, fee_data, total_gas_cost, total_gas_cost_eur, currency
+        reward_data,
+        fee_data,
+        total_gas_cost,
+        total_gas_cost_eur,
+        currency,
+        starting_eth_balance,
+        starting_eth_value,
+        starting_lpt_balance,
+        starting_lpt_value,
+        end_eth_balance,
+        end_eth_value,
+        end_lpt_balance,
+        end_lpt_value,
     )
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
@@ -1527,16 +1741,28 @@ if __name__ == "__main__":
         token_and_eth_transfers, transactions_with_gas_info_df, currency
     )
 
+    # Exit early if no data was found.
+    if all(
+        df.empty
+        for df in [reward_data, fee_data, transfer_bond_data, token_and_eth_transfers]
+    ):
+        print("\033[93mNo income data found, exiting.\033[0m")  # Yellow text
+        sys.exit(0)
+
     print("Merging token and ETH transfers with reward, fee, and transfer bond data...")
     combined_df = pd.concat(
         [token_and_eth_transfers, reward_data, fee_data, transfer_bond_data],
         ignore_index=True,
     ).sort_values(by="timestamp")
-    combined_df = combined_df[CSV_COLUMN_ORDER]
 
-    overview_df = pd.DataFrame(overview_table, columns=["Metric", "Value"])
+    print("Adding cumulative balances to the combined DataFrame...")
+    combined_df = add_cumulative_balances(
+        combined_df, starting_eth_balance, starting_lpt_balance
+    )
 
     print("\nExporting data to Excel...")
+    combined_df = combined_df[CSV_COLUMN_ORDER]
+    overview_df = pd.DataFrame(overview_table, columns=["Metric", "Value"])
     with ExcelWriter("orchestrator_income.xlsx") as writer:
         overview_df.to_excel(writer, sheet_name="overview", index=False)
 
