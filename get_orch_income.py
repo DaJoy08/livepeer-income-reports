@@ -369,10 +369,7 @@ def fetch_starting_lpt_balance(wallet_address: str, block_hash: str) -> float:
     """
     try:
         checksum_address = Web3.to_checksum_address(wallet_address)
-        lpt_contract = ARB_CLIENT.eth.contract(
-            address=LPT_TOKEN_CONTRACT_ADDRESS, abi=LPT_TOKEN_ABI
-        )
-        balance = lpt_contract.functions.balanceOf(checksum_address).call(
+        balance = LPT_TOKEN_CONTRACT.functions.balanceOf(checksum_address).call(
             block_identifier=block_hash
         )
         return balance / 10**18
@@ -436,10 +433,7 @@ def fetch_block_hash_for_round(round_number: str | int) -> str:
         The block hash as a hexadecimal string.
     """
     try:
-        rounds_manager_contract = ARB_CLIENT.eth.contract(
-            address=ROUNDS_MANAGER_CONTRACT_ADDRESS, abi=ROUNDS_MANAGER_ABI
-        )
-        block_hash = rounds_manager_contract.functions.blockHashForRound(
+        block_hash = ROUNDS_MANAGER_CONTRACT.functions.blockHashForRound(
             int(round_number)
         ).call()
         return Web3.to_hex(block_hash)
@@ -465,10 +459,7 @@ def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
     """
     try:
         checksum_address = Web3.to_checksum_address(orchestrator)
-        bonding_manager_contract = ARB_CLIENT.eth.contract(
-            address=BONDING_MANAGER_CONTRACT_ADDRESS, abi=BONDING_MANAGER_ABI
-        )
-        pending_stake = bonding_manager_contract.functions.pendingStake(
+        pending_stake = BONDING_MANAGER_CONTRACT.functions.pendingStake(
             checksum_address, 0
         ).call(block_identifier=block_hash)
         return pending_stake / 10**18
@@ -1636,15 +1627,15 @@ def generate_overview_table(
 if __name__ == "__main__":
     print("== Orchestrator Income Data Exporter ==")
 
-    start_time = input("Enter data range start (YYYY-MM-DD HH:MM:SS): ")
+    start_time = input("Enter data range start (YYYY-MM-DD HH:MM:SS): ").strip()
     start_timestamp = human_to_unix_time(human_time=start_time)
-    end_time = input("Enter data range end (YYYY-MM-DD HH:MM:SS): ")
+    end_time = input("Enter data range end (YYYY-MM-DD HH:MM:SS): ").strip()
     end_timestamp = human_to_unix_time(human_time=end_time)
-    orchestrator = input("Enter orchestrator address: ").lower()
+    orchestrator = input("Enter orchestrator address: ").strip().lower()
     if not orchestrator:
         print("Orchestrator address is required.")
         sys.exit(1)
-    currency = input("Enter currency (default: EUR): ").upper() or "EUR"
+    currency = input("Enter currency (default: EUR): ").strip().upper() or "EUR"
 
     print("\nFetching start and end balances...")
     start_block_hash = fetch_block_number_by_timestamp(timestamp=start_timestamp)
