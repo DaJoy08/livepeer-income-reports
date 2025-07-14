@@ -10,7 +10,6 @@ This repository contains some simple python scripts that can be used to gather i
 1. Clone the repository:
 
    ```bash
-   ```bash
    git clone https://github.com/rickstaa/livepeer-income-scripts.git
    ```
 
