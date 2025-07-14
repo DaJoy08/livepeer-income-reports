@@ -159,7 +159,7 @@ def generate_delegator_balance_report(
 
 
 if __name__ == "__main__":
-    print("== Delegator LPT Balance Report ==")
+    print("== Delegator Arbitrum LPT/ETH Balance Report ==")
     wallet_address = input("Enter delegator wallet address: ").strip().lower()
     checksum_address = Web3.to_checksum_address(wallet_address)
     date_time = input("Enter date and time (YYYY-MM-DD HH:MM:SS): ").strip()

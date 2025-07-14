@@ -113,6 +113,9 @@ query WinningTicketRedeemedEvents($first: Int!, $skip: Int!) {{
     transaction {{
       id
     }}
+    sender {{
+      id
+    }}
     faceValue
     round {{
       id
@@ -1076,6 +1079,7 @@ def process_fee_events(fee_events: list, currency: str) -> pd.DataFrame:
                 f"price ({currency})": eth_price,
                 f"value ({currency})": value_currency,
                 "source function": "redeemWinningTicket",
+                "sender": event["sender"]["id"],
             }
         )
     return pd.DataFrame(rows)
@@ -1535,6 +1539,7 @@ def generate_overview_table(
     end_eth_value: float,
     end_lpt_balance: float,
     end_lpt_value: float,
+    gateways: int = 0,
 ) -> list:
     """Generate an overview table with key metrics.
 
@@ -1552,6 +1557,7 @@ def generate_overview_table(
         end_eth_value: The ending ETH value in the specified currency.
         end_lpt_balance: The ending LPT balance.
         end_lpt_value: The ending LPT value in the specified currency.
+        gateways: The number of gateway sending tickets (default: 0).
 
     Returns:
         A list of lists representing the overview table.
@@ -1619,6 +1625,10 @@ def generate_overview_table(
         [
             f"Total Value Accumulated ({currency})",
             f"{total_value_accumulated:.4f} {currency}",
+        ],
+        [
+            "Gateways Sending Tickets",
+            f"{gateways}" if gateways > 0 else "N/A",
         ],
     ]
     return overview_table
@@ -1794,6 +1804,10 @@ if __name__ == "__main__":
         unbond_events=unbond_data,
     )
 
+    print("\nGet number of gateways sending tickets to the orchestrator...")
+    gateways = fee_data["sender"].nunique() if not fee_data.empty else 0
+    print(f"Total gateways sending tickets: {gateways}")
+
     print(f"\nOverview ({start_time} - {end_time}):")
     overview_table = generate_overview_table(
         reward_data=reward_data,
@@ -1809,6 +1823,7 @@ if __name__ == "__main__":
         end_eth_value=end_eth_value,
         end_lpt_balance=end_lpt_balance,
         end_lpt_value=end_lpt_value,
+        gateways=gateways,
     )
     print(tabulate(overview_table, headers=["Metric", "Value"], tablefmt="grid"))
 
