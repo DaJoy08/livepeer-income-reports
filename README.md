@@ -3,11 +3,13 @@
 This repository contains some simple python scripts that can be used to gather information about your Livepeer orchestrator income. It retrieves this data using the [Livepeer subgraph](https://thegraph.com/explorer/subgraphs/FE63YgkzcpVocxdCEyEYbvjYqEf2kb1A6daMYRxmejYC?view=Query&chain=arbitrum-one) and [Contracts](https://docs.livepeer.org/references/contract-addresses) or RPC calls. It currently contains the following scripts:
 
 - `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
+- `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of a delegator wallet on Arbitrum at a specific timestamp.
 
 ## Usage
 
 1. Clone the repository:
 
+   ```bash
    ```bash
    git clone https://github.com/rickstaa/livepeer-income-scripts.git
    ```
