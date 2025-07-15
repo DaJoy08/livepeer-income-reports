@@ -3,6 +3,8 @@
 import sys
 from web3 import Web3
 from tabulate import tabulate
+import pandas as pd
+from pandas import ExcelWriter
 
 from get_orch_income import (
     fetch_crypto_price,
@@ -14,7 +16,7 @@ from get_orch_income import (
 )
 
 
-def fetch_eth_balance(wallet_address: str, block_number: int):
+def fetch_eth_balance(wallet_address: str, block_number: int) -> float:
     """Fetch the ETH balance of a wallet at a specific block.
 
     Args:
@@ -22,7 +24,7 @@ def fetch_eth_balance(wallet_address: str, block_number: int):
         block_number: The block number to check the balance at.
 
     Returns:
-        float: The ETH balance in the wallet at the specified block.
+        The ETH balance in the wallet at the specified block.
     """
     balance_wei = ARB_CLIENT.eth.get_balance(
         wallet_address, block_identifier=block_number
@@ -38,9 +40,8 @@ def fetch_lpt_balance(wallet_address: str, block_number: int) -> float:
         block_number: The block number to check the balance at.
 
     Returns:
-        float: The unbonded LPT balance in the wallet at the specified block.
+        The unbonded LPT balance in the wallet at the specified block.
     """
-
     return (
         LPT_TOKEN_CONTRACT.functions.balanceOf(wallet_address).call(
             block_identifier=block_number
@@ -57,7 +58,7 @@ def fetch_pending_fees(wallet_address: str, round_number: int) -> float:
         round_number: The round number to check the pending fees at.
 
     Returns:
-        float: The pending fees in ETH for the delegator at the specified round.
+        The pending fees in ETH for the delegator at the specified round.
     """
     return (
         BONDING_MANAGER_CONTRACT.functions.pendingFees(
@@ -75,7 +76,7 @@ def fetch_pending_rewards(wallet_address: str, round_number: int) -> float:
         round_number: The round number to check the pending rewards at.
 
     Returns:
-        float: The pending rewards in LPT for the delegator at the specified round.
+        The pending rewards in LPT for the delegator at the specified round.
     """
     return (
         BONDING_MANAGER_CONTRACT.functions.pendingStake(
@@ -85,9 +86,9 @@ def fetch_pending_rewards(wallet_address: str, round_number: int) -> float:
     )
 
 
-def generate_delegator_balance_report(
+def fetch_delegator_balances(
     wallet_address: str, timestamp: int, currency="EUR"
-):
+) -> dict:
     """Generate a balance report for a delegator wallet.
 
     Args:
@@ -96,7 +97,7 @@ def generate_delegator_balance_report(
         currency: The currency for the report (default is EUR).
 
     Returns:
-        None: Prints the balance report to the console.
+        A dictionary containing the balances and their values.
     """
     block_number = ARB_CLIENT.eth.get_block_number()
     round_number = ROUNDS_MANAGER_CONTRACT.functions.currentRound().call()
@@ -126,36 +127,70 @@ def generate_delegator_balance_report(
         eth_value + lpt_unbonded_value + eth_unclaimed_fees_value + lpt_bonded_value
     )
 
-    # Create a table for the report.
-    table = [
-        ["ETH", f"{eth_balance:.4f} ETH", f"{eth_value:.2f} {currency}"],
+    return {
+        "eth_balance": eth_balance,
+        "eth_value": eth_value,
+        "lpt_unbonded_balance": lpt_unbonded_balance,
+        "lpt_unbonded_value": lpt_unbonded_value,
+        "eth_unclaimed_fees": eth_unclaimed_fees,
+        "eth_unclaimed_fees_value": eth_unclaimed_fees_value,
+        "lpt_bonded_balance": lpt_bonded_balance,
+        "lpt_bonded_value": lpt_bonded_value,
+        "total_wallet_value": total_wallet_value,
+    }
+
+
+def create_balance_table(
+    date_time: str, wallet_address: str, balances: dict, currency: str
+) -> list:
+    """Create a table for the delegator balance report.
+
+    Args:
+        date_time: The date and time of the report.
+        wallet_address: The wallet address to include in the report.
+        balances: A dictionary containing the balances and their values.
+        currency: The currency for the report.
+
+    Returns:
+        A list of lists representing the table rows.
+    """
+    return [
+        [
+            "Wallet Address",
+            "",
+            wallet_address,
+        ],
+        [
+            "Timestamp",
+            "",
+            date_time,
+        ],
+        [
+            "ETH",
+            f"{balances['eth_balance']:.4f} ETH",
+            f"{balances['eth_value']:.2f} {currency}",
+        ],
         [
             "LPT (unbonded)",
-            f"{lpt_unbonded_balance:.4f} LPT",
-            f"{lpt_unbonded_value:.2f} {currency}",
+            f"{balances['lpt_unbonded_balance']:.4f} LPT",
+            f"{balances['lpt_unbonded_value']:.2f} {currency}",
         ],
         [
             "LPT (bonded)",
-            f"{lpt_bonded_balance:.4f} LPT",
-            f"{lpt_bonded_value:.2f} {currency}",
+            f"{balances['lpt_bonded_balance']:.4f} LPT",
+            f"{balances['lpt_bonded_value']:.2f} {currency}",
         ],
         [
             "ETH (unclaimed)",
-            f"{eth_unclaimed_fees:.4f} ETH",
-            f"{eth_unclaimed_fees_value:.2f} {currency}",
+            f"{balances['eth_unclaimed_fees']:.4f} ETH",
+            f"{balances['eth_unclaimed_fees_value']:.2f} {currency}",
         ],
         [
             "Total Wallet Value",
             "-",
-            f"{total_wallet_value:.2f} {currency}",
+            f"{balances['total_wallet_value']:.2f} {currency}",
         ],
     ]
-
-    print(
-        tabulate(
-            table, headers=["Metric", "Amount", f"Value ({currency})"], tablefmt="grid"
-        )
-    )
 
 
 if __name__ == "__main__":
@@ -170,10 +205,27 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print("Generating balance report...")
-    try:
-        generate_delegator_balance_report(
-            wallet_address=checksum_address, timestamp=timestamp, currency=currency
+    balances = fetch_delegator_balances(
+        wallet_address=checksum_address, timestamp=timestamp, currency=currency
+    )
+    table = create_balance_table(
+        date_time=date_time,
+        wallet_address=wallet_address,
+        balances=balances,
+        currency=currency,
+    )
+
+    print(
+        tabulate(
+            table,
+            headers=["Metric", "Amount", "Value"],
+            tablefmt="grid",
         )
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    )
+
+    print("\nExporting data to Excel...")
+    excel_filename = "delegator_balance_report.xlsx"
+    df = pd.DataFrame(table, columns=["Metric", "Amount", "Value"])
+    with ExcelWriter(excel_filename) as writer:
+        df.to_excel(writer, sheet_name="delegator balance report", index=False)
+    print(f"Export completed: {excel_filename}")

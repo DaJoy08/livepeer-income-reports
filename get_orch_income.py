@@ -1528,6 +1528,7 @@ def add_cumulative_balances(
 
 
 def generate_overview_table(
+    orchestrator: str,
     start_time: str,
     end_time: str,
     reward_data: pd.DataFrame,
@@ -1548,6 +1549,7 @@ def generate_overview_table(
     """Generate an overview table with key metrics.
 
     Args:
+        orchestrator: The address of the orchestrator.
         start_time: The start time of the data range.
         end_time: The end time of the data range.
         reward_data: DataFrame containing reward data.
@@ -1595,6 +1597,8 @@ def generate_overview_table(
     )
 
     overview_table = [
+        ["Network", "Arbitrum"],
+        ["Wallet Address", orchestrator],
         ["Start Time", start_time],
         ["End Time", end_time],
         [
@@ -1818,6 +1822,7 @@ if __name__ == "__main__":
 
     print(f"\nOverview ({start_time} - {end_time}):")
     overview_table = generate_overview_table(
+        orchestrator=orchestrator,
         start_time=start_time,
         end_time=end_time,
         reward_data=reward_data,
@@ -1877,11 +1882,11 @@ if __name__ == "__main__":
         overview_df.to_excel(writer, sheet_name="overview", index=False)
 
         lpt_transactions = combined_df[combined_df["currency"] == "LPT"]
-        lpt_transactions.to_excel(writer, sheet_name="LPT_transactions", index=False)
+        lpt_transactions.to_excel(writer, sheet_name="LPT transactions", index=False)
 
         eth_transactions = combined_df[combined_df["currency"] == "ETH"]
-        eth_transactions.to_excel(writer, sheet_name="ETH_transactions", index=False)
+        eth_transactions.to_excel(writer, sheet_name="ETH transactions", index=False)
 
-        combined_df.to_excel(writer, sheet_name="all_transactions", index=False)
+        combined_df.to_excel(writer, sheet_name="all transactions", index=False)
 
     print("Excel export completed.")
