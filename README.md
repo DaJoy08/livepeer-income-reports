@@ -1,6 +1,8 @@
-# Livepeer Income
+# Livepeer Income Reports
 
-This repository contains some simple python scripts that can be used to gather information about your Livepeer orchestrator income. It retrieves this data using the [Livepeer subgraph](https://thegraph.com/explorer/subgraphs/FE63YgkzcpVocxdCEyEYbvjYqEf2kb1A6daMYRxmejYC?view=Query&chain=arbitrum-one) and [Contracts](https://docs.livepeer.org/references/contract-addresses) or RPC calls. It currently contains the following scripts:
+This repository provides Python scripts to retrieve and generate detailed reports on orchestrator and delegator wallet activity using the [Livepeer subgraph](https://thegraph.com/explorer/subgraphs/FE63YgkzcpVocxdCEyEYbvjYqEf2kb1A6daMYRxmejYC?view=Query&chain=arbitrum-one) and Livepeer [Contracts](https://docs.livepeer.org/references/contract-addresses) via RPC calls. These tools are designed to help orchestrators and delegators analyze their income and balances for tax reporting or general insights.
+
+## Scripts
 
 - `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
 - `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of a delegator wallet on Arbitrum at a specific timestamp.
