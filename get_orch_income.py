@@ -1246,14 +1246,16 @@ def fetch_and_process_events(
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
         currency: The currency for the event values (e.g., "EUR", "USD").
-        fetch_func: A callable function to fetch events. It should accept orchestrator address,
-            start timestamp, and end timestamp as arguments and return a list of events.
-        process_func: A callable function to process the fetched events. It should accept a list
-            of events and a currency string as arguments and return a Pandas DataFrame.
-        event_name: A string representing the name of the event being processed (e.g., "reward events").
+        fetch_func: A function to fetch events, taking orchestrator address, start and
+            end timestamps, and returning a list of events.
+        process_func: A function to process fetched events, taking a list of events and
+            a currency string as arguments, and
+        event_name: A string representing the name of the event being processed
+            (e.g., "reward events").
 
     Returns:
-        A Pandas DataFrame containing the processed event data. If no events are found, returns an empty DataFrame.
+        A Pandas DataFrame containing the processed event data. If no events are found,
+        returns an empty DataFrame.
     """
     print(f"\nFetching {event_name}...")
     events = fetch_func(orchestrator, start_timestamp, end_timestamp)
@@ -1526,6 +1528,8 @@ def add_cumulative_balances(
 
 
 def generate_overview_table(
+    start_time: str,
+    end_time: str,
     reward_data: pd.DataFrame,
     fee_data: pd.DataFrame,
     total_gas_cost: float,
@@ -1544,6 +1548,8 @@ def generate_overview_table(
     """Generate an overview table with key metrics.
 
     Args:
+        start_time: The start time of the data range.
+        end_time: The end time of the data range.
         reward_data: DataFrame containing reward data.
         fee_data: DataFrame containing fee data.
         total_gas_cost: Total gas cost in ETH.
@@ -1589,6 +1595,8 @@ def generate_overview_table(
     )
 
     overview_table = [
+        ["Start Time", start_time],
+        ["End Time", end_time],
         [
             "Starting ETH Balance",
             f"{starting_eth_balance:.4f} ETH ({starting_eth_value:.2f} {currency})",
@@ -1810,6 +1818,8 @@ if __name__ == "__main__":
 
     print(f"\nOverview ({start_time} - {end_time}):")
     overview_table = generate_overview_table(
+        start_time=start_time,
+        end_time=end_time,
         reward_data=reward_data,
         fee_data=fee_data,
         total_gas_cost=total_gas_cost,
