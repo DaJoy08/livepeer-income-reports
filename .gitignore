@@ -2,8 +2,8 @@
 __pycache__/
 *.pyc
 
-orchestrator_income.xlsx
-
+*.csv
+*.xlsx
 
 .vscode
 *.code-workspace

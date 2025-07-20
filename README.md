@@ -4,8 +4,9 @@ This repository provides Python scripts to retrieve and generate detailed report
 
 ## Scripts
 
-- `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
+- `add_crypto_price_to_csv.py`: Adds historical crypto prices and values to a CSV file containing asset symbols and amounts.
 - `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of a delegator wallet on Arbitrum at a specific timestamp.
+- `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
 
 ## Usage
 
@@ -36,6 +37,18 @@ This repository provides Python scripts to retrieve and generate detailed report
 
    ```bash
    python get_orchestrator_info.py
+   ```
+
+   Or for delegator balance reports:
+
+   ```bash
+   python get_delegator_balance.py
+   ```
+
+   Or to add crypto prices to a CSV file:
+
+   ```bash
+   python add_crypto_price_to_csv.py
    ```
 
 5. The script will generate an Excel file named `orchestrator_income.xlsx` with two tabs: `overview` and `transactions`. The `overview` tab contains a summary of your orchestrator's income, while the `transactions` tab contains detailed transaction data.
