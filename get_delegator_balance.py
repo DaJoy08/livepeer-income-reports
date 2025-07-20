@@ -9,79 +9,79 @@ from pandas import ExcelWriter
 from get_orch_income import (
     fetch_crypto_price,
     human_to_unix_time,
+    fetch_block_number_by_timestamp,
     BONDING_MANAGER_CONTRACT,
-    ROUNDS_MANAGER_CONTRACT,
     LPT_TOKEN_CONTRACT,
     ARB_CLIENT,
 )
 
 
-def fetch_eth_balance(wallet_address: str, block_number: int) -> float:
+def fetch_eth_balance(wallet_address: str, block_hash: str) -> float:
     """Fetch the ETH balance of a wallet at a specific block.
 
     Args:
         wallet_address: The wallet address to check.
-        block_number: The block number to check the balance at.
+        block_hash: The block hash to check the balance at.
 
     Returns:
         The ETH balance in the wallet at the specified block.
     """
     balance_wei = ARB_CLIENT.eth.get_balance(
-        wallet_address, block_identifier=block_number
+        wallet_address, block_identifier=block_hash
     )
     return balance_wei / 10**18
 
 
-def fetch_lpt_balance(wallet_address: str, block_number: int) -> float:
+def fetch_lpt_balance(wallet_address: str, block_hash: str) -> float:
     """Fetch the unbonded LPT balance of a wallet at a specific block.
 
     Args:
         wallet_address: The wallet address to check.
-        block_number: The block number to check the balance at.
+        block_hash: The block hash to check the balance at.
 
     Returns:
         The unbonded LPT balance in the wallet at the specified block.
     """
     return (
         LPT_TOKEN_CONTRACT.functions.balanceOf(wallet_address).call(
-            block_identifier=block_number
+            block_identifier=block_hash
         )
         / 10**18
     )
 
 
-def fetch_pending_fees(wallet_address: str, round_number: int) -> float:
+def fetch_pending_fees(wallet_address: str, block_hash: str) -> float:
     """Fetch the pending fees for a delegator at a specific round.
 
     Args:
         wallet_address: The wallet address to check.
-        round_number: The round number to check the pending fees at.
+        block_hash: The block hash to check the pending fees at.
 
     Returns:
         The pending fees in ETH for the delegator at the specified round.
     """
     return (
-        BONDING_MANAGER_CONTRACT.functions.pendingFees(
-            wallet_address, round_number
-        ).call()
+        BONDING_MANAGER_CONTRACT.functions.pendingFees(wallet_address, 0).call(
+            block_identifier=block_hash
+        )
         / 10**18
     )
 
 
-def fetch_pending_rewards(wallet_address: str, round_number: int) -> float:
+def fetch_pending_rewards(wallet_address: str, block_hash: str) -> float:
     """Fetch the pending rewards for a delegator at a specific round.
 
     Args:
         wallet_address: The wallet address to check.
-        round_number: The round number to check the pending rewards at.
+        block_hash: The block hash to check the pending rewards at.
 
     Returns:
         The pending rewards in LPT for the delegator at the specified round.
     """
     return (
-        BONDING_MANAGER_CONTRACT.functions.pendingStake(
-            wallet_address, round_number
-        ).call()
+        BONDING_MANAGER_CONTRACT.functions.pendingStake(wallet_address, 0).call(
+            block_identifier=block_hash
+        )
         / 10**18
     )
 
@@ -99,14 +99,13 @@ def fetch_delegator_balances(
     Returns:
         A dictionary containing the balances and their values.
     """
-    block_number = ARB_CLIENT.eth.get_block_number()
-    round_number = ROUNDS_MANAGER_CONTRACT.functions.currentRound().call()
+    block_hash = fetch_block_number_by_timestamp(timestamp=timestamp)
 
     # Fetch balances.
-    eth_balance = fetch_eth_balance(wallet_address, block_number)
-    lpt_unbonded_balance = fetch_lpt_balance(wallet_address, block_number)
-    eth_unclaimed_fees = fetch_pending_fees(wallet_address, round_number)
-    lpt_bonded_balance = fetch_pending_rewards(wallet_address, round_number)
+    eth_balance = fetch_eth_balance(wallet_address, block_hash)
+    lpt_unbonded_balance = fetch_lpt_balance(wallet_address, block_hash)
+    eth_unclaimed_fees = fetch_pending_fees(wallet_address, block_hash)
+    lpt_bonded_balance = fetch_pending_rewards(wallet_address, block_hash)
 
     # Fetch prices.
     eth_price = fetch_crypto_price(
