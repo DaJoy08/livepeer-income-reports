@@ -186,6 +186,13 @@ query TransferBondEvents($first: Int!, $skip: Int!) {{
   }}
 }}
 """
+TRANSCODER_QUERY = """
+query Transcoder($id: ID!) {
+  transcoder(id: $id) {
+    activationTimestamp
+  }
+}
+"""
 
 CSV_COLUMN_ORDER = [
     "timestamp",
@@ -322,6 +329,34 @@ def create_arbiscan_url(transaction_id: str) -> str:
         A string representing the Arbiscan URL for the transaction.
     """
     return f"https://arbiscan.io/tx/{transaction_id}"
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_activation_timestamp(orchestrator: str) -> int:
+    """Fetch the activation timestamp for a given orchestrator.
+
+    Args:
+        orchestrator: The address of the orchestrator.
+
+    Returns:
+        The activation timestamp for the orchestrator, or None if not found.
+    """
+    try:
+        query = gql(TRANSCODER_QUERY)
+        variables = {"id": orchestrator.lower()}
+        response = GRAPHQL_CLIENT.execute(query, variable_values=variables)
+        
+        transcoder = response.get("transcoder")
+        if transcoder and transcoder.get("activationTimestamp"):
+            return int(transcoder["activationTimestamp"])
+        return None
+    except Exception as e:
+        print(f"Error fetching activation timestamp for {orchestrator}: {e}")
+        return None
 
 
 @retry(
@@ -1103,7 +1138,7 @@ def process_bond_events(bond_events: list, currency: str) -> pd.DataFrame:
         round_id = event["round"]["id"]
         transaction = event["transaction"]["id"]
         transaction_url = create_arbiscan_url(transaction)
-        amount = float(event["amount"])
+        amount = float(event["additionalAmount"])
         transaction_type = "bond"
 
         lpt_price = fetch_crypto_price(
@@ -1249,13 +1284,13 @@ def fetch_and_process_events(
         fetch_func: A function to fetch events, taking orchestrator address, start and
             end timestamps, and returning a list of events.
         process_func: A function to process fetched events, taking a list of events and
-            a currency string as arguments, and
+            a currency string as arguments, and returning a Pandas DataFrame.
         event_name: A string representing the name of the event being processed
             (e.g., "reward events").
 
     Returns:
         A Pandas DataFrame containing the processed event data. If no events are found,
-        returns an empty DataFrame.
+            returns an empty DataFrame.
     """
     print(f"\nFetching {event_name}...")
     events = fetch_func(orchestrator, start_timestamp, end_timestamp)
@@ -1444,11 +1479,11 @@ def add_compounding_rewards(
         orchestrator=orchestrator, block_hash=fetch_block_hash_for_round(previous_round)
     )
     prev_bond = sum(
-        event["amount"]
+        float(event["additionalAmount"])
         for event in fetch_bond_events(delegator=orchestrator, round=previous_round)
     )
     prev_unbond = sum(
-        event["amount"]
+        float(event["amount"])
         for event in fetch_unbond_events(delegator=orchestrator, round=previous_round)
     )
 
@@ -1531,6 +1566,7 @@ def generate_overview_table(
     orchestrator: str,
     start_time: str,
     end_time: str,
+    activation_timestamp: int,
     reward_data: pd.DataFrame,
     fee_data: pd.DataFrame,
     total_gas_cost: float,
@@ -1552,6 +1588,7 @@ def generate_overview_table(
         orchestrator: The address of the orchestrator.
         start_time: The start time of the data range.
         end_time: The end time of the data range.
+        activation_timestamp: The activation timestamp of the orchestrator.
         reward_data: DataFrame containing reward data.
         fee_data: DataFrame containing fee data.
         total_gas_cost: Total gas cost in ETH.
@@ -1595,10 +1632,18 @@ def generate_overview_table(
         + total_compounding_rewards_value
         - total_gas_cost_eur
     )
+    activation_time = (
+        datetime.fromtimestamp(activation_timestamp, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        if activation_timestamp
+        else "N/A"
+    )
 
     overview_table = [
         ["Network", "Arbitrum"],
         ["Wallet Address", orchestrator],
+        ["Activation Time", activation_time],
         ["Start Time", start_time],
         ["End Time", end_time],
         [
@@ -1658,6 +1703,16 @@ if __name__ == "__main__":
         print("Orchestrator address is required.")
         sys.exit(1)
     currency = input("Enter currency (default: EUR): ").strip().upper() or "EUR"
+
+    print("\nFetching orchestrator activation timestamp...")
+    activation_timestamp = fetch_activation_timestamp(orchestrator)
+    if activation_timestamp:
+        activation_time = datetime.fromtimestamp(
+            activation_timestamp, tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Orchestrator activated at: {activation_time}")
+    else:
+        print("Could not fetch activation timestamp")
 
     print("\nFetching start and end balances...")
     start_block_hash = fetch_block_number_by_timestamp(timestamp=start_timestamp)
@@ -1825,6 +1880,7 @@ if __name__ == "__main__":
         orchestrator=orchestrator,
         start_time=start_time,
         end_time=end_time,
+        activation_timestamp=activation_timestamp,
         reward_data=reward_data,
         fee_data=fee_data,
         total_gas_cost=total_gas_cost,
