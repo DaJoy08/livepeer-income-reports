@@ -5,7 +5,7 @@ This repository provides Python scripts to retrieve and generate detailed report
 ## Scripts
 
 - `add_crypto_price_to_csv.py`: Adds historical crypto prices and values to a CSV file containing asset symbols and amounts.
-- `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of a delegator wallet on Arbitrum at a specific timestamp.
+- `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of one or more delegator wallets on Arbitrum at a specific timestamp, with support for aggregated multi-wallet reporting.
 - `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
 
 ## Usage
