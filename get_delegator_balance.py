@@ -109,10 +109,10 @@ def fetch_delegator_balances(
     total_lpt_bonded_balance = 0.0
     for wallet_address in wallet_addresses:
         print(f"Fetching balances for {wallet_address}...")
-        eth_balance = fetch_eth_balance(wallet_address, block_hash)
-        lpt_unbonded_balance = fetch_lpt_balance(wallet_address, block_hash)
-        eth_unclaimed_fees = fetch_pending_fees(wallet_address, block_hash)
-        lpt_bonded_balance = fetch_pending_rewards(wallet_address, block_hash)
+        eth_balance = fetch_eth_balance(wallet_address=wallet_address, block_hash=block_hash)
+        lpt_unbonded_balance = fetch_lpt_balance(wallet_address=wallet_address, block_hash=block_hash)
+        eth_unclaimed_fees = fetch_pending_fees(wallet_address=wallet_address, block_hash=block_hash)
+        lpt_bonded_balance = fetch_pending_rewards(wallet_address=wallet_address, block_hash=block_hash)
         total_eth_balance += eth_balance
         total_lpt_unbonded_balance += lpt_unbonded_balance
         total_eth_unclaimed_fees += eth_unclaimed_fees
