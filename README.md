@@ -4,8 +4,14 @@ This repository provides Python scripts to retrieve and generate detailed report
 
 ## Scripts
 
+> [!WARNING]
+> A bug in the `get_orch_income.py` script's compounding rewards calculation may slightly understate actual rewards. In some cases, especially with daily reward transfers, it can even result in negative recomputed compounding rewards.
+> [!IMPORTANT]
+> The `get_delegator_income.py` script has not been fully validated yet. Currently, it retrieves `pendingRewards` and fees at the end of the round, rather than at the exact moment they become available.
+
 - `add_crypto_values.py`: Enriches CSV or Excel files containing cryptocurrency portfolios by adding historical price data and calculated values.
 - `get_delegator_balance.py`: Retrieves the ETH and LPT balances (both bonded and unbonded) of one or more delegator wallets on Arbitrum at a specific timestamp, with support for aggregated multi-wallet reporting.
+- `get_delegator_income.py`: Tracks delegator rewards (LPT) and fees (ETH) over time, factoring in wallet activity and historical pricing for accurate income and tax reporting.
 - `get_orchestrator_info.py`: Retrieves information about your orchestrator's income into a CSV file.
 
 ## Usage

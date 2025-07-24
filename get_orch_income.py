@@ -194,29 +194,39 @@ query Transcoder($id: ID!) {
 }
 """
 
-CSV_COLUMN_ORDER = [
-    "timestamp",
-    "transaction hash",
-    "transaction url",
-    "direction",
-    "transaction type",
-    "currency",
-    "amount",
-    "value (EUR)",
-    "price (EUR)",
-    "gas cost (EUR)",
-    "gas cost (ETH)",
-    "round",
-    "pending stake",
-    "compounding rewards",
-    "reward cut",
-    "fee share",
-    "pool reward",
-    "face value",
-    "source function",
-    "cumulative balance (ETH)",
-    "cumulative balance (LPT)",
-]
+
+def get_csv_column_order(currency: str) -> list:
+    """Generate the CSV column order with dynamic currency names.
+
+    Args:
+        currency: The target currency (e.g., "EUR", "USD").
+
+    Returns:
+        A list of column names with the correct currency.
+    """
+    return [
+        "timestamp",
+        "transaction hash",
+        "transaction url",
+        "direction",
+        "transaction type",
+        "currency",
+        "amount",
+        f"value ({currency})",
+        f"price ({currency})",
+        f"gas cost ({currency})",
+        "gas cost (ETH)",
+        "round",
+        "pending stake",
+        "compounding rewards",
+        "reward cut",
+        "fee share",
+        "pool reward",
+        "face value",
+        "source function",
+        "cumulative balance (ETH)",
+        "cumulative balance (LPT)",
+    ]
 
 
 RPC_HISTORY_ERROR_DISPLAYED = False
@@ -349,7 +359,7 @@ def fetch_activation_timestamp(orchestrator: str) -> int:
         query = gql(TRANSCODER_QUERY)
         variables = {"id": orchestrator.lower()}
         response = GRAPHQL_CLIENT.execute(query, variable_values=variables)
-        
+
         transcoder = response.get("transcoder")
         if transcoder and transcoder.get("activationTimestamp"):
             return int(transcoder["activationTimestamp"])
@@ -1213,13 +1223,14 @@ def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
 
 
 def process_transfer_bond_events(
-    transfer_bond_events: list, currency: str
+    transfer_bond_events: list, currency: str, delegator: str
 ) -> pd.DataFrame:
     """Process transfer bond events and create a DataFrame with relevant information.
 
     Args:
         transfer_bond_events: A list of transfer bond events.
         currency: The currency for the reward values (e.g., "EUR", "USD").
+        delegator: The address of the delegator/orchestrator to determine direction.
 
     Returns:
         A Pandas DataFrame representing the transfer bond data.
@@ -1237,7 +1248,7 @@ def process_transfer_bond_events(
         amount = float(event["amount"])
         transaction_type = "reward transfer"
         direction = (
-            "incoming" if event["newDelegator"]["id"] == orchestrator else "outgoing"
+            "incoming" if event["newDelegator"]["id"] == delegator else "outgoing"
         )
 
         lpt_price = fetch_crypto_price(
@@ -1266,25 +1277,25 @@ def process_transfer_bond_events(
 
 
 def fetch_and_process_events(
-    orchestrator: str,
+    address: str,
     start_timestamp: int,
     end_timestamp: int,
     currency: str,
     fetch_func: Callable[[str, int, int], list],
-    process_func: Callable[[list, str], pd.DataFrame],
+    process_func: Callable,
     event_name: str,
 ) -> pd.DataFrame:
-    """Fetch and process blockchain events for a given orchestrator and time range.
+    """Fetch and process blockchain events for a given address and time range.
 
     Args:
-        orchestrator: The address of the orchestrator.
+        address: The address of the orchestrator or delegator.
         start_timestamp: The start timestamp for the time range.
         end_timestamp: The end timestamp for the time range.
         currency: The currency for the event values (e.g., "EUR", "USD").
-        fetch_func: A function to fetch events, taking orchestrator address, start and
+        fetch_func: A function to fetch events, taking address, start and
             end timestamps, and returning a list of events.
-        process_func: A function to process fetched events, taking a list of events and
-            a currency string as arguments, and returning a Pandas DataFrame.
+        process_func: A function to process fetched events. Should take
+            (events, currency) as arguments and return a DataFrame.
         event_name: A string representing the name of the event being processed
             (e.g., "reward events").
 
@@ -1293,12 +1304,12 @@ def fetch_and_process_events(
             returns an empty DataFrame.
     """
     print(f"\nFetching {event_name}...")
-    events = fetch_func(orchestrator, start_timestamp, end_timestamp)
+    events = fetch_func(address, start_timestamp, end_timestamp)
     if events:
         print(f"Found {len(events)} {event_name}.")
         return process_func(events, currency)
     else:
-        print(f"No {event_name} found for the specified orchestrator and time range.")
+        print(f"No {event_name} found for the specified address and time range.")
         return pd.DataFrame()
 
 
@@ -1529,36 +1540,59 @@ def add_cumulative_balances(
     starting_eth_balance: float,
     starting_lpt_balance: float,
 ) -> pd.DataFrame:
-    """Add cumulative ETH and LPT balances to the DataFrame based on the starting
-    balances.
+    """Add total controlled balances (wallet + pending amounts).
 
     Args:
-        combined_df: A DataFrame containing transaction data with 'amount', 'currency',
-            and 'direction' columns.
-        starting_eth_balance: The starting ETH balance.
-        starting_lpt_balance: The starting LPT balance.
+        combined_df: The DataFrame containing transaction data.
+        starting_eth_balance: Starting ETH wallet balance.
+        starting_lpt_balance: Starting LPT wallet balance.
 
     Returns:
-        A DataFrame with additional columns for cumulative ETH and LPT balances.
+        DataFrame with total controlled balances.
     """
+    # Total ETH = Starting ETH + Pending Fees + Net Transfers
+    eth_transfers = combined_df.apply(
+        lambda row: (
+            row["amount"]
+            if row["currency"] == "ETH" and row["direction"] == "incoming" 
+            and row["transaction type"] == "transfer"
+            else (
+                -row["amount"]
+                if row["currency"] == "ETH" and row["direction"] == "outgoing"
+                and row["transaction type"] == "transfer"
+                else 0
+            )
+        ),
+        axis=1,
+    ).cumsum()
+    
     combined_df["cumulative balance (ETH)"] = (
-        combined_df.apply(
-            lambda row: (
-                row["amount"]
-                if row["currency"] == "ETH" and row["direction"] == "incoming"
-                else (
-                    -row["amount"]
-                    if row["currency"] == "ETH" and row["direction"] == "outgoing"
-                    else 0
-                )
-            ),
-            axis=1,
-        ).cumsum()
-        + starting_eth_balance
+        starting_eth_balance +
+        eth_transfers +
+        combined_df.get("pending fees", 0).fillna(0)
     )
+
+    # Total LPT = Starting LPT + Pending Rewards + Net Transfers  
+    lpt_transfers = combined_df.apply(
+        lambda row: (
+            row["amount"]
+            if row["currency"] == "LPT" and row["direction"] == "incoming"
+            and row["transaction type"] == "transfer"
+            else (
+                -row["amount"]
+                if row["currency"] == "LPT" and row["direction"] == "outgoing"
+                and row["transaction type"] == "transfer"
+                else 0
+            )
+        ),
+        axis=1,
+    ).cumsum()
     combined_df["cumulative balance (LPT)"] = (
-        combined_df["pending stake"] + starting_lpt_balance
+        starting_lpt_balance +
+        lpt_transfers +
+        combined_df.get("pending rewards", 0).fillna(0)
     )
+    
     return combined_df
 
 
@@ -1763,7 +1797,7 @@ if __name__ == "__main__":
     )
 
     reward_data = fetch_and_process_events(
-        orchestrator=orchestrator,
+        address=orchestrator,
         start_timestamp=start_timestamp,
         end_timestamp=end_timestamp,
         currency=currency,
@@ -1772,7 +1806,7 @@ if __name__ == "__main__":
         event_name="reward events",
     )
     fee_data = fetch_and_process_events(
-        orchestrator=orchestrator,
+        address=orchestrator,
         start_timestamp=start_timestamp,
         end_timestamp=end_timestamp,
         currency=currency,
@@ -1781,7 +1815,7 @@ if __name__ == "__main__":
         event_name="fee events",
     )
     bond_data = fetch_and_process_events(
-        orchestrator=orchestrator,
+        address=orchestrator,
         start_timestamp=start_timestamp,
         end_timestamp=end_timestamp,
         currency=currency,
@@ -1790,7 +1824,7 @@ if __name__ == "__main__":
         event_name="bond events",
     )
     unbond_data = fetch_and_process_events(
-        orchestrator=orchestrator,
+        address=orchestrator,
         start_timestamp=start_timestamp,
         end_timestamp=end_timestamp,
         currency=currency,
@@ -1799,12 +1833,12 @@ if __name__ == "__main__":
         event_name="unbond events",
     )
     transfer_bond_data = fetch_and_process_events(
-        orchestrator=orchestrator,
+        address=orchestrator,
         start_timestamp=start_timestamp,
         end_timestamp=end_timestamp,
         currency=currency,
         fetch_func=fetch_transfer_bond_events,
-        process_func=process_transfer_bond_events,
+        process_func=lambda events, currency: process_transfer_bond_events(events, currency, orchestrator),
         event_name="transfer bond events",
     )
 
@@ -1932,7 +1966,7 @@ if __name__ == "__main__":
     )
 
     print("\nExporting data to Excel...")
-    combined_df = combined_df[CSV_COLUMN_ORDER]
+    combined_df = combined_df[get_csv_column_order(currency)]
     overview_df = pd.DataFrame(overview_table, columns=["Metric", "Value"])
     with ExcelWriter("orchestrator_income.xlsx") as writer:
         overview_df.to_excel(writer, sheet_name="overview", index=False)
