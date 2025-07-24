@@ -27,6 +27,7 @@ from tqdm import tqdm
 from typing import Callable
 import json
 
+
 tqdm.pandas()
 
 GRAPH_TOKEN = os.getenv("GRAPH_AUTH_TOKEN")
@@ -218,6 +219,7 @@ def get_csv_column_order(currency: str) -> list:
         "gas cost (ETH)",
         "round",
         "pending stake",
+        "pending fees",
         "compounding rewards",
         "reward cut",
         "fee share",
@@ -495,18 +497,18 @@ def fetch_block_hash_for_round(round_number: str | int) -> str:
     wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception_type(Exception),
 )
-def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
-    """Fetch the pending stake for a given orchestrator at a specific block hash.
+def fetch_pending_stake(address: str, block_hash: str) -> int:
+    """Fetch the pending stake for a given delegator at a specific block hash.
 
     Args:
-        orchestrator: The address of the orchestrator.
+        address: The address of the delegator.
         block_hash: The block hash to fetch the pending stake at.
 
     Returns:
-        The pending stake for the orchestrator at the specified block hash.
+        The pending stake for the delegator at the specified block hash.
     """
     try:
-        checksum_address = Web3.to_checksum_address(orchestrator)
+        checksum_address = Web3.to_checksum_address(address)
         pending_stake = BONDING_MANAGER_CONTRACT.functions.pendingStake(
             checksum_address, 0
         ).call(block_identifier=block_hash)
@@ -520,6 +522,41 @@ def fetch_pending_stake(orchestrator: str, block_hash: str) -> int:
             RPC_HISTORY_ERROR_DISPLAYED = True
         else:
             print(f"Error fetching pending stake for block hash {block_hash}: {e}")
+        return None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_pending_fees(address: str, block_hash: str) -> float:
+    """Fetch the pending fees for a given delegator at a specific block hash.
+
+    Args:
+        address: The address of the delegator.
+        block_hash: The block hash to fetch the pending fees at.
+
+    Returns:
+        The pending fees for the delegator at the specified block hash.
+        Returns None if an error occurs.
+    """
+    try:
+        checksum_address = Web3.to_checksum_address(address)
+        pending_fees = BONDING_MANAGER_CONTRACT.functions.pendingFees(
+            checksum_address, 0
+        ).call(block_identifier=block_hash)
+        return pending_fees / 10**18
+    except Exception as e:
+        global RPC_HISTORY_ERROR_DISPLAYED
+        if "missing trie node" in str(e) and not RPC_HISTORY_ERROR_DISPLAYED:
+            print(
+                "\033[93mWarning: RPC node lacks historical data for pendingFees. "
+                "Switch to an archive node provider like Infura or Alchemy.\033[0m"
+            )
+            RPC_HISTORY_ERROR_DISPLAYED = True
+        else:
+            print(f"Error fetching pending fees for block hash {block_hash}: {e}")
         return None
 
 
@@ -1430,13 +1467,13 @@ def retrieve_token_and_eth_transfers(
 
 
 def add_pending_stake(
-    orchestrator: str,
+    address: str,
     reward_data: pd.DataFrame,
 ) -> pd.DataFrame:
     """Add pending stake information for each round in which a reward was received.
 
     Args:
-        orchestrator: The address of the orchestrator.
+        address: Delegator address to fetch pending stake for.
         reward_data: A DataFrame containing reward event data.
 
     Returns:
@@ -1453,12 +1490,42 @@ def add_pending_stake(
     )
     reward_data["pending stake"] = reward_data.progress_apply(
         lambda row: fetch_pending_stake(
-            orchestrator=orchestrator, block_hash=row["blockHash"]
+            address=address, block_hash=row["blockHash"]
         ),
         axis=1,
     )
 
     return reward_data
+
+
+def add_pending_fees(
+    address: str,
+    fee_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Add pending fees information for each round in which a reward was received.
+
+    Args:
+        address: Delegator address to fetch pending fees for.
+        reward_data: A DataFrame containing reward event data.
+
+    Returns:
+        A DataFrame with an additional column for pending fees.
+    """
+    if fee_data.empty:
+        print("No reward data available to process.")
+        return fee_data
+    fee_data = fee_data.copy()
+
+    print("Fetching block hashes and pending fees...")
+    fee_data["blockHash"] = fee_data["round"].progress_apply(fetch_block_hash_for_round)
+    fee_data["pending fees"] = fee_data.progress_apply(
+        lambda row: fetch_pending_fees(
+            address=address, block_hash=row["blockHash"]
+        ),
+        axis=1,
+    )
+
+    return fee_data
 
 
 def add_compounding_rewards(
@@ -1487,7 +1554,7 @@ def add_compounding_rewards(
     first_reward_round = int(reward_data["round"].iloc[0])
     previous_round = first_reward_round - 1
     previous_pending_stake = fetch_pending_stake(
-        orchestrator=orchestrator, block_hash=fetch_block_hash_for_round(previous_round)
+        address=orchestrator, block_hash=fetch_block_hash_for_round(previous_round)
     )
     prev_bond = sum(
         float(event["additionalAmount"])
@@ -1554,33 +1621,41 @@ def add_cumulative_balances(
     eth_transfers = combined_df.apply(
         lambda row: (
             row["amount"]
-            if row["currency"] == "ETH" and row["direction"] == "incoming" 
+            if row["currency"] == "ETH"
+            and row["direction"] == "incoming"
             and row["transaction type"] == "transfer"
             else (
                 -row["amount"]
-                if row["currency"] == "ETH" and row["direction"] == "outgoing"
+                if row["currency"] == "ETH"
+                and row["direction"] == "outgoing"
                 and row["transaction type"] == "transfer"
                 else 0
             )
         ),
         axis=1,
     ).cumsum()
-    
+
     combined_df["cumulative balance (ETH)"] = (
-        starting_eth_balance +
-        eth_transfers +
-        combined_df.get("pending fees", 0).fillna(0)
+        starting_eth_balance
+        + eth_transfers
+        + (
+            combined_df["pending fees"].fillna(0)
+            if "pending fees" in combined_df.columns
+            else 0
+        )
     )
 
-    # Total LPT = Starting LPT + Pending Rewards + Net Transfers  
+    # Total LPT = Starting LPT + Pending Rewards + Net Transfers
     lpt_transfers = combined_df.apply(
         lambda row: (
             row["amount"]
-            if row["currency"] == "LPT" and row["direction"] == "incoming"
+            if row["currency"] == "LPT"
+            and row["direction"] == "incoming"
             and row["transaction type"] == "transfer"
             else (
                 -row["amount"]
-                if row["currency"] == "LPT" and row["direction"] == "outgoing"
+                if row["currency"] == "LPT"
+                and row["direction"] == "outgoing"
                 and row["transaction type"] == "transfer"
                 else 0
             )
@@ -1588,11 +1663,15 @@ def add_cumulative_balances(
         axis=1,
     ).cumsum()
     combined_df["cumulative balance (LPT)"] = (
-        starting_lpt_balance +
-        lpt_transfers +
-        combined_df.get("pending rewards", 0).fillna(0)
+        starting_lpt_balance
+        + lpt_transfers
+        + (
+            combined_df["pending stake"].fillna(0)
+            if "pending stake" in combined_df.columns
+            else 0
+        )
     )
-    
+
     return combined_df
 
 
@@ -1838,7 +1917,9 @@ if __name__ == "__main__":
         end_timestamp=end_timestamp,
         currency=currency,
         fetch_func=fetch_transfer_bond_events,
-        process_func=lambda events, currency: process_transfer_bond_events(events, currency, orchestrator),
+        process_func=lambda events, currency: process_transfer_bond_events(
+            transfer_bond_events=events, currency=currency, delegator=orchestrator
+        ),
         event_name="transfer bond events",
     )
 
@@ -1893,8 +1974,13 @@ if __name__ == "__main__":
 
     print("\nAdding pending stake to data...")
     reward_data = add_pending_stake(
-        orchestrator=orchestrator,
+        address=orchestrator,
         reward_data=reward_data,
+    )
+    print("\nAdding pending fees to data...")
+    fee_data = add_pending_fees(
+        address=orchestrator,
+        fee_data=fee_data,
     )
 
     print("\nCalculating compounding rewards...")
