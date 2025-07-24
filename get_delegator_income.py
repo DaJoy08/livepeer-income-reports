@@ -25,6 +25,7 @@ from get_orch_income import (
     fetch_starting_lpt_balance,
     fetch_block_hash_for_round,
     fetch_all_transactions,
+    fetch_pending_fees,
     fetch_pending_stake,
     retrieve_token_and_eth_transfers,
     fetch_bond_events,
@@ -57,41 +58,6 @@ query Rounds($first: Int!, $skip: Int!, $startTimestamp_gt: Int!, $startTimestam
 """
 
 RPC_HISTORY_ERROR_DISPLAYED = False
-
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=60),
-    retry=retry_if_exception_type(Exception),
-)
-def fetch_pending_fees(delegator: str, block_hash: str) -> float:
-    """Fetch the pending fees for a given delegator at a specific block hash.
-
-    Args:
-        delegator: The address of the delegator.
-        block_hash: The block hash to fetch the pending fees at.
-
-    Returns:
-        The pending fees for the delegator at the specified block hash.
-        Returns None if an error occurs.
-    """
-    try:
-        checksum_address = Web3.to_checksum_address(delegator)
-        pending_fees = BONDING_MANAGER_CONTRACT.functions.pendingFees(
-            checksum_address, 0
-        ).call(block_identifier=block_hash)
-        return pending_fees / 10**18
-    except Exception as e:
-        global RPC_HISTORY_ERROR_DISPLAYED
-        if "missing trie node" in str(e) and not RPC_HISTORY_ERROR_DISPLAYED:
-            print(
-                "\033[93mWarning: RPC node lacks historical data for pendingFees. "
-                "Switch to an archive node provider like Infura or Alchemy.\033[0m"
-            )
-            RPC_HISTORY_ERROR_DISPLAYED = True
-        else:
-            print(f"Error fetching pending fees for block hash {block_hash}: {e}")
-        return None
 
 
 def get_csv_column_order(currency: str) -> list:
@@ -155,9 +121,8 @@ def fetch_delegator_info(delegator: str, block_hash: str) -> dict:
         next_unbonding_lock_id = delegator_info[6]
 
         # Get pending stake and rewards using the retry functions.
-        pending_stake = fetch_pending_stake(delegator, block_hash)
-        pending_fees = fetch_pending_fees(delegator, block_hash)
-
+        pending_stake = fetch_pending_stake(address=delegator, block_hash=block_hash)
+        pending_fees = fetch_pending_fees(address=delegator, block_hash=block_hash)
 
         return {
             "bonded_amount": bonded_amount,
@@ -236,7 +201,7 @@ def process_delegator_balances_over_rounds(
         unix_timestamp = round_data["startTimestamp"]
 
         # Retrieve pending stake and fees for the delegator at the round.
-        block_hash = fetch_block_hash_for_round(round_id)
+        block_hash = fetch_block_hash_for_round(round_number=round_id)
         if not block_hash:
             continue
         delegator_info = fetch_delegator_info(delegator, block_hash)
@@ -385,15 +350,13 @@ def generate_overview_table(
         else 0
     )
     end_pending_fees = (
-        fee_data.get("pending fees", pd.Series(0)).iloc[-1] 
-        if not fee_data.empty 
-        else 0
-    )    
+        fee_data.get("pending fees", pd.Series(0)).iloc[-1] if not fee_data.empty else 0
+    )
     starting_pending_stake_value = starting_pending_stake * start_lpt_price
     starting_pending_fees_value = starting_pending_fees * start_eth_price
     total_pending_rewards_value = end_pending_rewards * end_lpt_price
     total_pending_fees_value = end_pending_fees * end_eth_price
-    
+
     overview_table = [
         ["Network", "Arbitrum"],
         ["Delegator Address", delegator],
@@ -477,10 +440,18 @@ if __name__ == "__main__":
     end_lpt_balance = fetch_starting_lpt_balance(
         wallet_address=delegator, block_hash=end_block_number
     )
-    start_eth_price = fetch_crypto_price("ETH", currency, start_timestamp)
-    start_lpt_price = fetch_crypto_price("LPT", currency, start_timestamp)
-    end_eth_price = fetch_crypto_price("ETH", currency, end_timestamp)
-    end_lpt_price = fetch_crypto_price("LPT", currency, end_timestamp)
+    start_eth_price = fetch_crypto_price(
+        crypto_symbol="ETH", target_currency=currency, unix_timestamp=start_timestamp
+    )
+    start_lpt_price = fetch_crypto_price(
+        crypto_symbol="LPT", target_currency=currency, unix_timestamp=start_timestamp
+    )
+    end_eth_price = fetch_crypto_price(
+        crypto_symbol="ETH", target_currency=currency, unix_timestamp=end_timestamp
+    )
+    end_lpt_price = fetch_crypto_price(
+        crypto_symbol="LPT", target_currency=currency, unix_timestamp=end_timestamp
+    )
     starting_eth_value = starting_eth_balance * start_eth_price
     starting_lpt_value = starting_lpt_balance * start_lpt_price
     end_eth_value = end_eth_balance * end_eth_price
@@ -500,7 +471,7 @@ if __name__ == "__main__":
     )
     starting_pending_fees = (
         starting_delegator_info["pending_fees"] if starting_delegator_info else 0
-    )    
+    )
     ending_delegator_info = fetch_delegator_info(delegator, end_block_number)
     ending_pending_stake = (
         ending_delegator_info["pending_stake"] if ending_delegator_info else 0
@@ -530,10 +501,18 @@ if __name__ == "__main__":
     ending_pending_fees_value = ending_pending_fees * end_eth_price
 
     print("\nStaking information:")
-    print(f"Starting pending stake: {starting_pending_stake:.4f} LPT ({starting_pending_stake_value:.2f} {currency})")
-    print(f"Starting pending fees: {starting_pending_fees:.4f} ETH ({starting_pending_fees_value:.2f} {currency})")
-    print(f"Ending pending stake: {ending_pending_stake:.4f} LPT ({ending_pending_stake_value:.2f} {currency})")
-    print(f"Ending pending fees: {ending_pending_fees:.4f} ETH ({ending_pending_fees_value:.2f} {currency})")
+    print(
+        f"Starting pending stake: {starting_pending_stake:.4f} LPT ({starting_pending_stake_value:.2f} {currency})"
+    )
+    print(
+        f"Starting pending fees: {starting_pending_fees:.4f} ETH ({starting_pending_fees_value:.2f} {currency})"
+    )
+    print(
+        f"Ending pending stake: {ending_pending_stake:.4f} LPT ({ending_pending_stake_value:.2f} {currency})"
+    )
+    print(
+        f"Ending pending fees: {ending_pending_fees:.4f} ETH ({ending_pending_fees_value:.2f} {currency})"
+    )
 
     print("\nProcessing delegator balances over rounds...")
     balance_data = process_delegator_balances_over_rounds(
@@ -569,7 +548,7 @@ if __name__ == "__main__":
         currency=currency,
         fetch_func=fetch_transfer_bond_events,
         process_func=lambda events, currency: process_transfer_bond_events(
-            events, currency, delegator
+            transfer_bond_events=events, currency=currency, delegator=delegator
         ),
         event_name="delegator transfer bond events",
     )
