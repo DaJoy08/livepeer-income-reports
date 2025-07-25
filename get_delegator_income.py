@@ -31,9 +31,16 @@ from get_orch_income import (
     fetch_bond_events,
     fetch_unbond_events,
     fetch_transfer_bond_events,
+    fetch_withdraw_stake_events,
+    fetch_withdraw_fees_events,
+    fetch_rebond_events,
     process_bond_events,
     process_unbond_events,
     process_transfer_bond_events,
+    process_withdraw_stake_events,
+    process_withdraw_fees_events,
+    process_rebond_events,
+    calculate_actual_release_values,
     fetch_and_process_events,
     BONDING_MANAGER_CONTRACT,
     GRAPHQL_CLIENT,
@@ -80,6 +87,12 @@ def get_csv_column_order(currency: str) -> list:
         "amount",
         f"value ({currency})",
         f"price ({currency})",
+        "withdraw round",
+        "release date",
+        f"release price ({currency})",
+        f"release value ({currency})",
+        "released LPT amount",
+        "release note",
         "pending rewards",
         "pending fees",
         "accumulated rewards",
@@ -271,6 +284,8 @@ def generate_overview_table(
     end_time: str,
     reward_data: pd.DataFrame,
     fee_data: pd.DataFrame,
+    unbond_data: pd.DataFrame,
+    withdraw_fees_data: pd.DataFrame,
     currency: str,
     starting_eth_balance: float,
     starting_eth_value: float,
@@ -295,6 +310,8 @@ def generate_overview_table(
         end_time: The end time of the report.
         reward_data: DataFrame containing pending rewards data.
         fee_data: DataFrame containing pending fees data.
+        unbond_data: DataFrame containing unbond data.
+        withdraw_fees_data: DataFrame containing withdraw fees data.
         currency: The currency for the report.
         starting_eth_balance: Starting ETH balance.
         starting_eth_value: Starting ETH value in the specified currency.
@@ -342,6 +359,37 @@ def generate_overview_table(
     total_value_accumulated = (
         total_accumulated_reward_value + total_accumulated_fees_value
     )
+
+    # Calculate total withdrawn fees.
+    withdraw_fees_data = withdraw_fees_data.copy()
+    total_withdrawn_fees = 0
+    total_withdrawn_fees_value = 0
+    if not withdraw_fees_data.empty:
+        total_withdrawn_fees = withdraw_fees_data.get("amount", pd.Series(0)).sum()
+        total_withdrawn_fees_value = withdraw_fees_data.get(
+            f"value ({currency})", pd.Series(0)
+        ).sum()
+
+    # Calculate total release value and amount from unbond events.
+    unbond_data = unbond_data.copy()
+    total_release_value = 0
+    total_released_lpt = 0
+    if not unbond_data.empty:
+        # Only sum non-zero and non-"N/A" release values.
+        valid_release_values = unbond_data[
+            (unbond_data[f"release value ({currency})"] != "N/A")
+            & (unbond_data[f"release value ({currency})"] != 0)
+        ]
+        if not valid_release_values.empty:
+            total_release_value = valid_release_values[
+                f"release value ({currency})"
+            ].sum()
+            valid_released_amounts = unbond_data[
+                (unbond_data["released LPT amount"] != "N/A")
+                & (unbond_data["released LPT amount"] != 0)
+            ]
+            if not valid_released_amounts.empty:
+                total_released_lpt = valid_released_amounts["released LPT amount"].sum()
 
     # Get pending values.
     end_pending_rewards = (
@@ -407,6 +455,16 @@ def generate_overview_table(
         [
             f"Total Value Accumulated ({currency})",
             f"{total_value_accumulated:.4f} {currency}",
+        ],
+        ["Total Withdrawn Fees (ETH)", f"{total_withdrawn_fees:.4f} ETH"],
+        [
+            f"Total Withdrawn Fees ({currency})",
+            f"{total_withdrawn_fees_value:.4f} {currency}",
+        ],
+        ["Total Released LPT", f"{total_released_lpt:.4f} LPT"],
+        [
+            f"Total Released LPT Value ({currency})",
+            f"{total_release_value:.4f} {currency}",
         ],
     ]
     return overview_table
@@ -552,6 +610,41 @@ if __name__ == "__main__":
         ),
         event_name="delegator transfer bond events",
     )
+    withdraw_stake_data = fetch_and_process_events(
+        address=delegator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_withdraw_stake_events,
+        process_func=process_withdraw_stake_events,
+        event_name="delegator withdraw stake events",
+    )
+    withdraw_fees_data = fetch_and_process_events(
+        address=delegator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_withdraw_fees_events,
+        process_func=process_withdraw_fees_events,
+        event_name="delegator withdraw fees events",
+    )
+    rebond_data = fetch_and_process_events(
+        address=delegator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_rebond_events,
+        process_func=process_rebond_events,
+        event_name="delegator rebond events",
+    )
+
+    print("\nCalculating actual release values for unbond events...")
+    unbond_data = calculate_actual_release_values(
+        unbond_data=unbond_data,
+        transfer_bond_data=transfer_bond_data,
+        bond_data=bond_data,
+        currency=currency,
+    )
 
     print("\nFetching wallet transactions...")
     transactions_df = fetch_all_transactions(
@@ -562,23 +655,31 @@ if __name__ == "__main__":
     wallet_transfers = retrieve_token_and_eth_transfers(
         transactions_df=transactions_df, wallet_address=delegator, currency=currency
     )
-    all_dataframes = [
+
+    # Exit early if no data was found.
+    all_data = [
         reward_data,
         fee_data,
         bond_data,
         unbond_data,
         transfer_bond_data,
+        withdraw_stake_data,
+        withdraw_fees_data,
+        rebond_data,
         wallet_transfers,
     ]
-    non_empty_dataframes = [df for df in all_dataframes if not df.empty]
-    if not non_empty_dataframes:
+    if all(df.empty for df in all_data):
         print("\033[93mNo income data found, exiting.\033[0m")
         sys.exit(0)
 
     print("\nCombining all data...")
-    combined_df = pd.concat(non_empty_dataframes, ignore_index=True).sort_values(
-        by="timestamp"
-    )
+    reindexed_data = [
+        df.reindex(columns=get_csv_column_order(currency)) for df in all_data
+    ]
+    combined_df = pd.concat(
+        reindexed_data,
+        ignore_index=True,
+    ).sort_values(by="timestamp")
 
     print("Adding cumulative balances...")
     combined_df = add_cumulative_balances(
@@ -594,6 +695,8 @@ if __name__ == "__main__":
         end_time=end_time,
         reward_data=reward_data,
         fee_data=fee_data,
+        unbond_data=unbond_data,
+        withdraw_fees_data=withdraw_fees_data,
         currency=currency,
         starting_eth_balance=starting_eth_balance,
         starting_eth_value=starting_eth_value,

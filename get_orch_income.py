@@ -154,6 +154,7 @@ query UnbondEvents($first: Int!, $skip: Int!) {{
   ) {{
     timestamp
     amount
+    withdrawRound
     round {{
       id
     }}
@@ -194,6 +195,83 @@ query Transcoder($id: ID!) {
   }
 }
 """
+WITHDRAW_STAKE_EVENTS_QUERY_BASE = """
+query WithdrawStakeEvents($first: Int!, $skip: Int!) {{
+  withdrawStakeEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+    orderBy: timestamp
+    orderDirection: asc
+  ) {{
+    id
+    timestamp
+    transaction {{
+      id
+    }}
+    delegator {{
+      id
+    }}
+    amount
+    unbondingLockId
+    round {{
+      id
+    }}
+  }}
+}}
+"""
+REBOND_EVENTS_QUERY_BASE = """
+query RebondEvents($first: Int!, $skip: Int!) {{
+  rebondEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+    orderBy: timestamp
+    orderDirection: asc
+  ) {{
+    id
+    timestamp
+    transaction {{
+      id
+    }}
+    delegator {{
+      id
+    }}
+    delegate {{
+      id
+    }}
+    amount
+    unbondingLockId
+    round {{
+      id
+    }}
+  }}
+}}
+"""
+WITHDRAW_FEES_EVENTS_QUERY_BASE = """
+query WithdrawFeesEvents($first: Int!, $skip: Int!) {{
+  withdrawFeesEvents(
+    where: {{ {where_clause} }}
+    first: $first
+    skip: $skip
+    orderBy: timestamp
+    orderDirection: asc
+  ) {{
+    id
+    timestamp
+    transaction {{
+      id
+    }}
+    delegator {{
+      id
+    }}
+    amount
+    round {{
+      id
+    }}
+  }}
+}}
+"""
 
 
 def get_csv_column_order(currency: str) -> list:
@@ -218,6 +296,12 @@ def get_csv_column_order(currency: str) -> list:
         f"gas cost ({currency})",
         "gas cost (ETH)",
         "round",
+        "withdraw round",
+        "release date",
+        f"release price ({currency})",
+        f"release value ({currency})",
+        "released LPT amount",
+        "release note",
         "pending stake",
         "pending fees",
         "compounding rewards",
@@ -489,6 +573,31 @@ def fetch_block_hash_for_round(round_number: str | int) -> str:
         return Web3.to_hex(block_hash)
     except Exception as e:
         print(f"Error fetching block hash for round {round_number}: {e}")
+        return None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_round_timestamp(round_number: int) -> int:
+    """Fetch the timestamp for a specific round.
+
+    Args:
+        round_number: The round number to get the timestamp for.
+
+    Returns:
+        The timestamp when the round started, or None if error.
+    """
+    try:
+        block_hash = fetch_block_hash_for_round(round_number)
+        if not block_hash:
+            return None
+        block = ARB_CLIENT.eth.get_block(block_hash)
+        return int(block["timestamp"])
+    except Exception as e:
+        print(f"Error fetching timestamp for round {round_number}: {e}")
         return None
 
 
@@ -1066,6 +1175,114 @@ def fetch_transfer_bond_events(
     )
 
 
+def fetch_withdraw_stake_events(
+    delegator: str,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: str | int = None,
+    page_size: int = 100,
+) -> list[object]:
+    """Fetch withdraw stake events for a given delegator within a specified time range.
+
+    Args:
+        delegator: The address of the delegator.
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+        page_size: The number of events to fetch per page (default: 100).
+
+    Returns:
+        A list of withdraw stake events.
+    """
+    where_clause = build_where_clause(
+        {
+            "delegator": delegator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": str(round) if round is not None else None,
+        }
+    )
+    variables = {"first": page_size, "skip": 0}
+    query = WITHDRAW_STAKE_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(
+        query=gql(query),
+        variables=variables,
+        event_key="withdrawStakeEvents",
+    )
+
+
+def fetch_withdraw_fees_events(
+    delegator: str,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: str | int = None,
+    page_size: int = 100,
+) -> list[object]:
+    """Fetch withdraw fees events for a given delegator within a specified time range.
+
+    Args:
+        delegator: The address of the delegator.
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+        page_size: The number of events to fetch per page (default: 100).
+
+    Returns:
+        A list of withdraw fees events.
+    """
+    where_clause = build_where_clause(
+        {
+            "delegator": delegator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": str(round) if round is not None else None,
+        }
+    )
+    variables = {"first": page_size, "skip": 0}
+    query = WITHDRAW_FEES_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(
+        query=gql(query),
+        variables=variables,
+        event_key="withdrawFeesEvents",
+    )
+
+
+def fetch_rebond_events(
+    delegator: str,
+    start_timestamp: int = None,
+    end_timestamp: int = None,
+    round: str | int = None,
+    page_size: int = 100,
+) -> list[object]:
+    """Fetch rebond events for a given delegator within a specified time range.
+
+    Args:
+        delegator: The address of the delegator.
+        start_timestamp: The start timestamp for the time range (optional).
+        end_timestamp: The end timestamp for the time range (optional).
+        round: The round to filter events by (optional).
+        page_size: The number of events to fetch per page (default: 100).
+
+    Returns:
+        A list of rebond events.
+    """
+    where_clause = build_where_clause(
+        {
+            "delegator": delegator,
+            "timestamp_gte": start_timestamp,
+            "timestamp_lte": end_timestamp,
+            "round": str(round) if round is not None else None,
+        }
+    )
+    variables = {"first": page_size, "skip": 0}
+    query = REBOND_EVENTS_QUERY_BASE.format(where_clause=where_clause)
+    return fetch_graphql_events(
+        query=gql(query),
+        variables=variables,
+        event_key="rebondEvents",
+    )
+
+
 def process_reward_events(reward_events: list, currency: str) -> pd.DataFrame:
     """Process reward events and create a DataFrame with relevant information.
 
@@ -1233,7 +1450,9 @@ def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
         transaction_url = create_arbiscan_url(transaction)
         amount = float(event["amount"])
         transaction_type = "unbond"
+        withdraw_round = event.get("withdrawRound")
 
+        # Get LPT price at unbond time.
         lpt_price = fetch_crypto_price(
             crypto_symbol="LPT",
             target_currency=currency,
@@ -1241,10 +1460,29 @@ def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
         )
         value_currency = amount * lpt_price
 
+        # Get withdrawal availability information.
+        available_timestamp = None
+        available_date = None
+        available_lpt_price = None
+
+        if withdraw_round:
+            available_timestamp = fetch_round_timestamp(int(withdraw_round))
+            if available_timestamp:
+                available_date = datetime.fromtimestamp(
+                    available_timestamp, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                available_lpt_price = fetch_crypto_price(
+                    crypto_symbol="LPT",
+                    target_currency=currency,
+                    unix_timestamp=available_timestamp,
+                )
+
         rows.append(
             {
                 "timestamp": timestamp,
                 "round": round_id,
+                "withdraw round": withdraw_round or "N/A",
+                "release date": available_date or "N/A",
                 "transaction hash": transaction,
                 "transaction url": transaction_url,
                 "transaction type": transaction_type,
@@ -1253,10 +1491,85 @@ def process_unbond_events(unbond_events: list, currency: str) -> pd.DataFrame:
                 "amount": amount,
                 f"price ({currency})": lpt_price,
                 f"value ({currency})": value_currency,
+                f"release price ({currency})": available_lpt_price or "N/A",
+                f"release value ({currency})": "TBD",  # Will be calculated later
                 "source function": "unbond",
             }
         )
     return pd.DataFrame(rows)
+
+
+def calculate_actual_release_values(
+    unbond_data: pd.DataFrame,
+    transfer_bond_data: pd.DataFrame,
+    bond_data: pd.DataFrame,
+    currency: str,
+) -> pd.DataFrame:
+    """Calculate actual release values after accounting for transfer bonds and rebonds.
+
+    Args:
+        unbond_data: DataFrame containing unbond events.
+        transfer_bond_data: DataFrame containing transfer bond events.
+        bond_data: DataFrame containing bond events (rebonds).
+        currency: The currency for the values (e.g., "EUR", "USD").
+
+    Returns:
+        Updated unbond_data DataFrame with corrected release values.
+    """
+    if unbond_data.empty:
+        return unbond_data
+
+    # Loop through each unbond event and adjust release values.
+    unbond_data = unbond_data.copy()
+    for idx, row in unbond_data.iterrows():
+        release_price = row[f"release price ({currency})"]
+        if release_price == "N/A":
+            unbond_data.at[idx, f"release value ({currency})"] = "N/A"
+            unbond_data.at[idx, "released LPT amount"] = "N/A"
+            continue  # Skip if no release price available
+        unbond_tx = row["transaction hash"]
+        unbond_amount = row["amount"]
+        unbond_round = int(row["round"])
+        withdraw_round = row["withdraw round"]
+        if withdraw_round == "N/A":
+            unbond_data.at[idx, f"release value ({currency})"] = "N/A"
+            unbond_data.at[idx, "released LPT amount"] = "N/A"
+            continue  # Skip if no withdraw round available
+        withdraw_round = int(withdraw_round)
+
+        # Check for direct transferBond in same transaction (0 taxable value).
+        if not transfer_bond_data.empty:
+            direct_transfer_bond = transfer_bond_data[
+                (transfer_bond_data["transaction hash"] == unbond_tx)
+                & (transfer_bond_data["direction"] == "outgoing")
+                & (transfer_bond_data["transaction type"] == "reward transfer")
+            ]
+            if not direct_transfer_bond.empty:
+                unbond_data.at[idx, f"release value ({currency})"] = 0
+                unbond_data.at[idx, "released LPT amount"] = 0
+                unbond_data.at[idx, "release note"] = "direct transfer"
+                continue
+
+        # Calculate released amount after re-bonds.
+        total_rebonded = 0
+        if not bond_data.empty:
+            rebonds_during_unbonding = bond_data[
+                (bond_data["round"].astype(int) > unbond_round)
+                & (bond_data["round"].astype(int) < withdraw_round)
+            ]
+            total_rebonded = (
+                rebonds_during_unbonding["amount"].sum()
+                if not rebonds_during_unbonding.empty
+                else 0
+            )
+        
+        remaining_amount = max(0, unbond_amount - total_rebonded)
+        final_release_value = remaining_amount * release_price
+        unbond_data.at[idx, f"release value ({currency})"] = final_release_value
+        unbond_data.at[idx, "released LPT amount"] = remaining_amount
+        if total_rebonded > 0:
+            unbond_data.at[idx, "release note"] = f"rebonded {total_rebonded:.4f} LPT"
+    return unbond_data
 
 
 def process_transfer_bond_events(
@@ -1308,6 +1621,149 @@ def process_transfer_bond_events(
                 f"price ({currency})": lpt_price,
                 f"value ({currency})": value_currency,
                 "source function": "transferBond",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def process_withdraw_stake_events(
+    withdraw_stake_events: list, currency: str
+) -> pd.DataFrame:
+    """Process withdraw stake events and create a DataFrame with relevant information.
+
+    Args:
+        withdraw_stake_events: A list of withdraw stake events.
+        currency: The currency for the values (e.g., "EUR", "USD").
+
+    Returns:
+        A Pandas DataFrame representing the withdraw stake data.
+    """
+    rows = []
+    for event in tqdm(
+        withdraw_stake_events, desc="Processing withdraw stake events", unit="event"
+    ):
+        timestamp = datetime.fromtimestamp(
+            event["timestamp"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
+        amount = float(event["amount"])
+
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
+        value_currency = amount * lpt_price
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "round": round_id,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
+                "transaction type": "withdraw stake",
+                "direction": "incoming",
+                "currency": "LPT",
+                "amount": amount,
+                f"price ({currency})": lpt_price,
+                f"value ({currency})": value_currency,
+                "source function": "withdrawStake",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def process_rebond_events(rebond_events: list, currency: str) -> pd.DataFrame:
+    """Process rebond events and create a DataFrame with relevant information.
+
+    Args:
+        rebond_events: A list of rebond events.
+        currency: The currency for the values (e.g., "EUR", "USD").
+
+    Returns:
+        A Pandas DataFrame representing the rebond data.
+    """
+    rows = []
+    for event in tqdm(rebond_events, desc="Processing rebond events", unit="event"):
+        timestamp = datetime.fromtimestamp(
+            event["timestamp"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
+        amount = float(event["amount"])
+
+        lpt_price = fetch_crypto_price(
+            crypto_symbol="LPT",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
+        value_currency = amount * lpt_price
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "round": round_id,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
+                "transaction type": "rebond",
+                "direction": "incoming",
+                "currency": "LPT",
+                "amount": amount,
+                f"price ({currency})": lpt_price,
+                f"value ({currency})": value_currency,
+                "source function": "rebond",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def process_withdraw_fees_events(
+    withdraw_fees_events: list, currency: str
+) -> pd.DataFrame:
+    """Process withdraw fees events and create a DataFrame with relevant information.
+
+    Args:
+        withdraw_fees_events: A list of withdraw fees events.
+        currency: The currency for the fee values (e.g., "EUR", "USD").
+
+    Returns:
+        A Pandas DataFrame representing the withdraw fees data.
+    """
+    rows = []
+    for event in tqdm(
+        withdraw_fees_events, desc="Processing withdraw fees events", unit="event"
+    ):
+        timestamp = datetime.fromtimestamp(
+            event["timestamp"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        round_id = event["round"]["id"]
+        transaction = event["transaction"]["id"]
+        transaction_url = create_arbiscan_url(transaction)
+        amount = float(event["amount"])
+
+        eth_price = fetch_crypto_price(
+            crypto_symbol="ETH",
+            target_currency=currency,
+            unix_timestamp=event["timestamp"],
+        )
+        value_currency = amount * eth_price
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "round": round_id,
+                "transaction hash": transaction,
+                "transaction url": transaction_url,
+                "transaction type": "withdraw fees",
+                "direction": "outgoing",
+                "currency": "ETH",
+                "amount": amount,
+                f"price ({currency})": eth_price,
+                f"value ({currency})": value_currency,
+                "source function": "withdrawFees",
             }
         )
     return pd.DataFrame(rows)
@@ -1489,9 +1945,7 @@ def add_pending_stake(
         fetch_block_hash_for_round
     )
     reward_data["pending stake"] = reward_data.progress_apply(
-        lambda row: fetch_pending_stake(
-            address=address, block_hash=row["blockHash"]
-        ),
+        lambda row: fetch_pending_stake(address=address, block_hash=row["blockHash"]),
         axis=1,
     )
 
@@ -1519,9 +1973,7 @@ def add_pending_fees(
     print("Fetching block hashes and pending fees...")
     fee_data["blockHash"] = fee_data["round"].progress_apply(fetch_block_hash_for_round)
     fee_data["pending fees"] = fee_data.progress_apply(
-        lambda row: fetch_pending_fees(
-            address=address, block_hash=row["blockHash"]
-        ),
+        lambda row: fetch_pending_fees(address=address, block_hash=row["blockHash"]),
         axis=1,
     )
 
@@ -1617,7 +2069,7 @@ def add_cumulative_balances(
     Returns:
         DataFrame with total controlled balances.
     """
-    # Total ETH = Starting ETH + Pending Fees + Net Transfers
+    # Total ETH = Starting ETH + Pending Fees + Net Transfers.
     eth_transfers = combined_df.apply(
         lambda row: (
             row["amount"]
@@ -1645,7 +2097,7 @@ def add_cumulative_balances(
         )
     )
 
-    # Total LPT = Starting LPT + Pending Rewards + Net Transfers
+    # Total LPT = Starting LPT + Pending Stake + Net Transfers.
     lpt_transfers = combined_df.apply(
         lambda row: (
             row["amount"]
@@ -1682,6 +2134,8 @@ def generate_overview_table(
     activation_timestamp: int,
     reward_data: pd.DataFrame,
     fee_data: pd.DataFrame,
+    unbond_data: pd.DataFrame,
+    withdraw_fees_data: pd.DataFrame,
     total_gas_cost: float,
     total_gas_cost_eur: float,
     currency: str,
@@ -1704,6 +2158,8 @@ def generate_overview_table(
         activation_timestamp: The activation timestamp of the orchestrator.
         reward_data: DataFrame containing reward data.
         fee_data: DataFrame containing fee data.
+        unbond_data: DataFrame containing unbond data.
+        withdraw_fees_data: DataFrame containing withdraw fees data.
         total_gas_cost: Total gas cost in ETH.
         total_gas_cost_eur: Total gas cost in the specified currency.
         currency: The currency for the overview table.
@@ -1745,6 +2201,38 @@ def generate_overview_table(
         + total_compounding_rewards_value
         - total_gas_cost_eur
     )
+
+    # Calculate total withdrawn fees.
+    withdraw_fees_data = withdraw_fees_data.copy()
+    total_withdrawn_fees = 0
+    total_withdrawn_fees_value = 0
+    if not withdraw_fees_data.empty:
+        total_withdrawn_fees = withdraw_fees_data.get("amount", pd.Series(0)).sum()
+        total_withdrawn_fees_value = withdraw_fees_data.get(
+            f"value ({currency})", pd.Series(0)
+        ).sum()
+
+    # Calculate total release value and amount from unbond events.
+    unbond_data = unbond_data.copy()
+    total_release_value = 0
+    total_released_lpt = 0
+    if not unbond_data.empty:
+        # Only sum non-zero and non-"N/A" release values.
+        valid_release_values = unbond_data[
+            (unbond_data[f"release value ({currency})"] != "N/A")
+            & (unbond_data[f"release value ({currency})"] != 0)
+        ]
+        if not valid_release_values.empty:
+            total_release_value = valid_release_values[
+                f"release value ({currency})"
+            ].sum()
+            valid_released_amounts = unbond_data[
+                (unbond_data["released LPT amount"] != "N/A")
+                & (unbond_data["released LPT amount"] != 0)
+            ]
+            if not valid_released_amounts.empty:
+                total_released_lpt = valid_released_amounts["released LPT amount"].sum()
+
     activation_time = (
         datetime.fromtimestamp(activation_timestamp, tz=timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -1785,6 +2273,11 @@ def generate_overview_table(
             f"Total Orchestrator Fees ({currency})",
             f"{total_orchestrator_fees_value:.4f} {currency}",
         ],
+        ["Total Withdrawn Fees (ETH)", f"{total_withdrawn_fees:.4f} ETH"],
+        [
+            f"Total Withdrawn Fees ({currency})",
+            f"{total_withdrawn_fees_value:.4f} {currency}",
+        ],
         ["Total Gas Cost (ETH)", f"{total_gas_cost:.4f} ETH"],
         [f"Total Gas Cost ({currency})", f"{total_gas_cost_eur:.4f} {currency}"],
         ["Total Compounding Rewards (LPT)", f"{total_compounding_rewards:.4f} LPT"],
@@ -1795,6 +2288,11 @@ def generate_overview_table(
         [
             f"Total Value Accumulated ({currency})",
             f"{total_value_accumulated:.4f} {currency}",
+        ],
+        ["Total Released LPT", f"{total_released_lpt:.4f} LPT"],
+        [
+            f"Total Released LPT Value ({currency})",
+            f"{total_release_value:.4f} {currency}",
         ],
         [
             "Gateways Sending Tickets",
@@ -1922,6 +2420,33 @@ if __name__ == "__main__":
         ),
         event_name="transfer bond events",
     )
+    withdraw_stake_data = fetch_and_process_events(
+        address=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_withdraw_stake_events,
+        process_func=process_withdraw_stake_events,
+        event_name="withdraw stake events",
+    )
+    withdraw_fees_data = fetch_and_process_events(
+        address=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_withdraw_fees_events,
+        process_func=process_withdraw_fees_events,
+        event_name="withdraw fees events",
+    )
+    rebond_data = fetch_and_process_events(
+        address=orchestrator,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        currency=currency,
+        fetch_func=fetch_rebond_events,
+        process_func=process_rebond_events,
+        event_name="rebond events",
+    )
 
     print("\nFetching all wallet transactions...")
     transactions_df = fetch_all_transactions(
@@ -1983,6 +2508,14 @@ if __name__ == "__main__":
         fee_data=fee_data,
     )
 
+    print("\nCalculating actual release values for unbond events...")
+    unbond_data = calculate_actual_release_values(
+        unbond_data=unbond_data,
+        transfer_bond_data=transfer_bond_data,
+        bond_data=bond_data,
+        currency=currency,
+    )
+
     print("\nCalculating compounding rewards...")
     reward_data = add_compounding_rewards(
         orchestrator=orchestrator,
@@ -2003,6 +2536,8 @@ if __name__ == "__main__":
         activation_timestamp=activation_timestamp,
         reward_data=reward_data,
         fee_data=fee_data,
+        unbond_data=unbond_data,
+        withdraw_fees_data=withdraw_fees_data,
         total_gas_cost=total_gas_cost,
         total_gas_cost_eur=total_gas_cost_eur,
         currency=currency,
@@ -2031,16 +2566,30 @@ if __name__ == "__main__":
     )
 
     # Exit early if no data was found.
+    all_data = [
+        reward_data,
+        fee_data,
+        bond_data,
+        unbond_data,
+        transfer_bond_data,
+        token_and_eth_transfers,
+        withdraw_stake_data,
+        withdraw_fees_data,
+        rebond_data,
+    ]
     if all(
         df.empty
-        for df in [reward_data, fee_data, transfer_bond_data, token_and_eth_transfers]
+        for df in all_data
     ):
         print("\033[93mNo income data found, exiting.\033[0m")  # Yellow text
         sys.exit(0)
 
     print("Merging token and ETH transfers with reward, fee, and transfer bond data...")
+    reindexed_data = [
+        df.reindex(columns=get_csv_column_order(currency)) for df in all_data
+    ]
     combined_df = pd.concat(
-        [token_and_eth_transfers, reward_data, fee_data, transfer_bond_data],
+        reindexed_data,
         ignore_index=True,
     ).sort_values(by="timestamp")
 
