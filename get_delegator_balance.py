@@ -87,14 +87,14 @@ def fetch_pending_rewards(wallet_address: str, block_hash: str) -> float:
 
 
 def fetch_delegator_balances(
-    wallet_addresses: list, timestamp: int, currency="EUR"
+    wallet_addresses: list, timestamp: int, currency="USD"
 ) -> dict:
     """Generate a balance report for delegator wallets (single or multiple).
 
     Args:
         wallet_addresses: List of wallet addresses to check.
         timestamp: The timestamp to check the balances at.
-        currency: The currency for the report (default is EUR).
+        currency: The currency for the report (default is USD).
 
     Returns:
         A dictionary containing the aggregated balances and their values.
