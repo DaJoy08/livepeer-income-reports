@@ -41,7 +41,7 @@ def find_column_case_insensitive(df: pd.DataFrame, column_name: str) -> str:
 def add_crypto_prices(
     input_file: str,
     output_file: str = None,
-    currency: str = "EUR",
+    currency: str = "USD",
     timestamp: int = None,
 ) -> None:
     """Add crypto prices and values to a CSV or Excel file.
@@ -49,7 +49,7 @@ def add_crypto_prices(
     Args:
         input_file: Path to the input CSV or Excel file with Asset and Amount columns.
         output_file: Path to the output Excel file (optional, defaults to input_file).
-        currency: Target currency for prices (default: EUR).
+        currency: Target currency for prices (default: USD).
         timestamp: Unix timestamp for historical prices (optional, uses current time).
     """
     try:
@@ -122,7 +122,7 @@ if __name__ == "__main__":
     if not input_file:
         print("File path is required.")
         sys.exit(1)
-    currency = input("Enter currency (default: EUR): ").strip().upper() or "EUR"
+    currency = input("Enter currency (default: USD): ").strip().upper() or "USD"
     date_time = input("Enter date and time (YYYY-MM-DD HH:MM:SS): ").strip()
     timestamp = human_to_unix_time(human_time=date_time)
 
