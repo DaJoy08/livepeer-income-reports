@@ -30,9 +30,9 @@ import json
 
 tqdm.pandas()
 
-GRAPH_TOKEN = os.getenv("GRAPH_AUTH_TOKEN")
-ARBISCAN_API_KEY_TOKEN = os.getenv("ARBISCAN_API_KEY_TOKEN")
-CRYPTO_COMPARE_API_KEY = os.getenv("CRYPTO_COMPARE_API_KEY", "")
+GRAPH_TOKEN = os.getenv("server_ca4b467278978637c0d06ea95bd81e40")
+ARBISCAN_API_KEY_TOKEN = os.getenv("X55WF4I53XTSSYPTBHXNFFR74AEE61HCFH")
+CRYPTO_COMPARE_API_KEY = os.getenv("52f3755f9885ab39c5d93080f13c9ff3480cef8eeda2940da96cc63e01214236", "")
 GRAPH_ID = os.getenv("GRAPH_ID", "FE63YgkzcpVocxdCEyEYbvjYqEf2kb1A6daMYRxmejYC")
 ARB_RPC_URL = os.getenv("ARB_RPC_URL", "https://arb1.arbitrum.io/rpc")
 
