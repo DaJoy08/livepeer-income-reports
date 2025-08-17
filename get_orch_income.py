@@ -133,10 +133,22 @@ query BondEvents($first: Int!, $skip: Int!) {{
     where: {{ {where_clause} }}
     first: $first
     skip: $skip
+    orderBy: timestamp
+    orderDirection: asc
   ) {{
+    id
     timestamp
     additionalAmount
     round {{
+      id
+    }}
+    newDelegate {{
+      id
+    }}
+    oldDelegate {{
+      id
+    }}
+    delegator {{
       id
     }}
     transaction {{
@@ -187,13 +199,6 @@ query TransferBondEvents($first: Int!, $skip: Int!) {{
     }}
   }}
 }}
-"""
-TRANSCODER_QUERY = """
-query Transcoder($id: ID!) {
-  transcoder(id: $id) {
-    activationTimestamp
-  }
-}
 """
 WITHDRAW_STAKE_EVENTS_QUERY_BASE = """
 query WithdrawStakeEvents($first: Int!, $skip: Int!) {{
@@ -272,7 +277,22 @@ query WithdrawFeesEvents($first: Int!, $skip: Int!) {{
   }}
 }}
 """
-
+TRANSCODER_QUERY = """
+query Transcoder($id: ID!) {
+  transcoder(id: $id) {
+    activationTimestamp
+  }
+}
+"""
+ROUND_QUERY = """
+query Round($id: ID!) {
+  round(id: $id) {
+    id
+    startBlock
+    startTimestamp
+  }
+}
+"""
 
 def get_csv_column_order(currency: str) -> list:
     """Generate the CSV column order with dynamic currency names.
@@ -452,6 +472,38 @@ def fetch_activation_timestamp(orchestrator: str) -> int:
         return None
     except Exception as e:
         print(f"Error fetching activation timestamp for {orchestrator}: {e}")
+        return None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    retry=retry_if_exception_type(Exception),
+)
+def fetch_round_info(round_id: int | str) -> dict | None:
+    """Fetch basic round information (id, startBlock, startTimestamp) from the subgraph.
+
+    Args:
+        round_id: The round identifier (number or string).
+
+    Returns:
+        A dict with keys {"id", "startBlock", "startTimestamp"} or None if not
+        found/error.
+    """
+    try:
+        query = gql(ROUND_QUERY)
+        variables = {"id": str(round_id)}
+        response = GRAPHQL_CLIENT.execute(query, variable_values=variables)
+        rnd = response.get("round")
+        if not rnd:
+            return None
+        return {
+            "id": int(rnd["id"]),
+            "startBlock": int(rnd["startBlock"]),
+            "startTimestamp": int(rnd["startTimestamp"]),
+        }
+    except Exception as e:
+        print(f"Error fetching round info for {round_id}: {e}")
         return None
 
 

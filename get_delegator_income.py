@@ -29,6 +29,7 @@ from get_orch_income import (
     fetch_pending_stake,
     retrieve_token_and_eth_transfers,
     fetch_bond_events,
+    fetch_round_info,
     fetch_unbond_events,
     fetch_transfer_bond_events,
     fetch_withdraw_stake_events,
@@ -42,6 +43,7 @@ from get_orch_income import (
     process_rebond_events,
     calculate_actual_release_values,
     fetch_and_process_events,
+    fetch_reward_events,
     BONDING_MANAGER_CONTRACT,
     GRAPHQL_CLIENT,
 )
@@ -187,14 +189,108 @@ def fetch_rounds_in_timeframe(start_timestamp: int, end_timestamp: int) -> list:
     return all_rounds
 
 
+def derive_delegate_per_round(
+    delegator: str,
+    rounds: list,
+    start_block_hash: str,
+    start_timestamp: int,
+    end_timestamp: int,
+) -> dict:
+    """Derive the delegate for a given delegator for each round within the specified
+    timeframe.
+
+    Args:
+        delegator: The delegator address to derive delegates for.
+        rounds: A list of rounds to process.
+        start_block_hash: The block hash at the start of the timeframe.
+        start_timestamp: The start timestamp of the timeframe.
+        end_timestamp: The end timestamp of the timeframe.
+
+    Returns:
+        A dictionary mapping round IDs to the delegate address for that round.
+    """
+    starting_info = fetch_delegator_info(delegator, start_block_hash)
+    initial_delegate = None
+    if starting_info and starting_info.get("delegate_address"):
+        try:
+            initial_delegate = starting_info["delegate_address"].lower()
+        except Exception:
+            initial_delegate = str(starting_info["delegate_address"]).lower()
+
+    events = (
+        fetch_bond_events(
+            delegator=delegator,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+        )
+        or []
+    )
+
+    switches_by_round: dict[str, str] = {}
+    for ev in sorted(events, key=lambda e: e.get("timestamp", 0)):
+        nd = ((ev.get("newDelegate") or {}).get("id") or "").lower() or None
+        od = ((ev.get("oldDelegate") or {}).get("id") or "").lower() or None
+        if nd and nd != od:
+            r = (ev.get("round") or {}).get("id")
+            if r:
+                switches_by_round[str(r)] = nd
+
+    delegate_per_round: dict[str, str | None] = {}
+    current_delegate = initial_delegate
+    for r in rounds:
+        rid = str(r["id"])
+        if rid in switches_by_round:
+            current_delegate = switches_by_round[rid]
+        delegate_per_round[rid] = current_delegate
+
+    return delegate_per_round
+
+
+def fetch_reward_timestamps_by_round(
+    delegate_per_round: dict,
+    start_timestamp: int,
+    end_timestamp: int,
+) -> dict:
+    """Get the reward call timestamp for each round using the appropriate delegate.
+
+    Args:
+        delegate_per_round: A dictionary mapping round IDs to delegate addresses.
+        start_timestamp: The start timestamp of the timeframe.
+        end_timestamp: The end timestamp of the timeframe.
+
+    Returns:
+        A mapping of round IDs to reward call timestamps.
+    """
+    reward_ts_by_round: dict[str, int] = {}
+    for round_id, delegate in tqdm(
+        delegate_per_round.items(), desc="Fetching reward timestamps by round"
+    ):
+        if not delegate or delegate == "0x0000000000000000000000000000000000000000":
+            continue
+        try:
+            events = fetch_reward_events(
+                orchestrator=delegate,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                round=round_id,
+                page_size=10,
+            )
+            if events:
+                reward_ts_by_round[str(round_id)] = int(events[0]["timestamp"])
+        except Exception as e:
+            print(f"Warning: failed to fetch reward event for round {round_id}: {e}")
+    return reward_ts_by_round
+
+
 def process_delegator_balances_over_rounds(
     delegator: str,
     rounds: list,
     currency: str,
     starting_pending_stake: float,
     starting_pending_fees: float,
+    reward_timestamps_by_round: dict,
 ) -> pd.DataFrame:
-    """Process delegator balances over rounds using pendingStake and pendingFees.
+    """Process delegator balances over rounds using pendingStake and pendingFees. Get price at exact reward call timestamp if available, otherwise round midpoint, else round start time.
 
     Args:
         delegator: The delegator address to process.
@@ -211,7 +307,7 @@ def process_delegator_balances_over_rounds(
     previous_pending_fees = starting_pending_fees
     for round_data in tqdm(rounds, desc="Processing rounds for delegator balances"):
         round_id = round_data["id"]
-        unix_timestamp = round_data["startTimestamp"]
+        unix_timestamp = int(round_data["startTimestamp"])
 
         # Retrieve pending stake and fees for the delegator at the round.
         block_hash = fetch_block_hash_for_round(round_number=round_id)
@@ -220,9 +316,26 @@ def process_delegator_balances_over_rounds(
         delegator_info = fetch_delegator_info(delegator, block_hash)
         if not delegator_info:
             continue
-        timestamp = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc).strftime(
+
+        reward_ts = reward_timestamps_by_round.get(str(round_id))
+        if reward_ts:
+            price_ts = int(reward_ts)
+            time_source = "reward call"
+        else:
+            # Compute round midpoint using next round's start from subgraph.
+            next_info = fetch_round_info(int(round_id) + 1)
+            next_start = int(next_info["startTimestamp"]) if next_info else None
+            if next_start and next_start > unix_timestamp:
+                price_ts = unix_timestamp + (next_start - unix_timestamp) // 2
+                time_source = "round middle"
+            else:
+                price_ts = unix_timestamp
+                time_source = "round start"
+
+        display_timestamp = datetime.fromtimestamp(price_ts, tz=timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
+
         current_pending_stake = delegator_info["pending_stake"]
         current_pending_fees = delegator_info["pending_fees"]
 
@@ -234,7 +347,7 @@ def process_delegator_balances_over_rounds(
 
         # Add rows for round income if they are greater than zero.
         base_row = {
-            "timestamp": timestamp,
+            "timestamp": display_timestamp,
             "round": round_id,
             "transaction hash": "",
             "transaction url": "",
@@ -245,7 +358,7 @@ def process_delegator_balances_over_rounds(
             "accumulated fees": accumulated_fees,
         }
         if reward_income > 0:
-            lpt_price = fetch_crypto_price("LPT", currency, unix_timestamp)
+            lpt_price = fetch_crypto_price("LPT", currency, price_ts)
             reward_row = base_row.copy()
             reward_row.update(
                 {
@@ -254,12 +367,12 @@ def process_delegator_balances_over_rounds(
                     "amount": reward_income,
                     f"price ({currency})": lpt_price,
                     f"value ({currency})": reward_income * lpt_price,
-                    "source function": "pendingStake",
+                    "source function": f"pendingStake ({time_source})",
                 }
             )
             rows.append(reward_row)
         if fee_income > 0:
-            eth_price = fetch_crypto_price("ETH", currency, unix_timestamp)
+            eth_price = fetch_crypto_price("ETH", currency, price_ts)
             fee_row = base_row.copy()
             fee_row.update(
                 {
@@ -268,7 +381,7 @@ def process_delegator_balances_over_rounds(
                     "amount": fee_income,
                     f"price ({currency})": eth_price,
                     f"value ({currency})": fee_income * eth_price,
-                    "source function": "pendingFees",
+                    "source function": f"pendingFees ({time_source})",
                 }
             )
             rows.append(fee_row)
@@ -519,6 +632,25 @@ if __name__ == "__main__":
     rounds = fetch_rounds_in_timeframe(start_timestamp, end_timestamp)
     print(f"Found {len(rounds)} rounds in timeframe.")
 
+    print("\nDeriving delegate per round using bond events...")
+    delegate_per_round = derive_delegate_per_round(
+        delegator=delegator,
+        rounds=rounds,
+        start_block_hash=start_block_number,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+    )
+    unique_delegates = {d for d in delegate_per_round.values() if d}
+    print(f"Found {len(unique_delegates)} delegate(s) across timeframe.")
+
+    print("\nFetching reward call timestamps per round...")
+    reward_ts_by_round = fetch_reward_timestamps_by_round(
+        delegate_per_round=delegate_per_round,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+    )
+    print(f"Collected timestamps for {len(reward_ts_by_round)} round(s).")
+
     print("\nFetching start and end pending balances...\n")
     start_round = rounds[0]["id"] if rounds else None
     starting_delegator_info = (
@@ -574,7 +706,12 @@ if __name__ == "__main__":
 
     print("\nProcessing delegator balances over rounds...")
     balance_data = process_delegator_balances_over_rounds(
-        delegator, rounds, currency, starting_pending_stake, starting_pending_fees
+        delegator,
+        rounds,
+        currency,
+        starting_pending_stake,
+        starting_pending_fees,
+        reward_ts_by_round,
     )
     reward_data = balance_data[balance_data["transaction type"] == "pending rewards"]
     fee_data = balance_data[balance_data["transaction type"] == "pending fees"]
