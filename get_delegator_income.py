@@ -100,8 +100,6 @@ def get_csv_column_order(currency: str) -> list:
         "accumulated rewards",
         "accumulated fees",
         "source function",
-        "cumulative balance (ETH)",
-        "cumulative balance (LPT)",
     ]
 
 
