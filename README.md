@@ -6,6 +6,7 @@ This repository provides Python scripts to retrieve and generate detailed report
 
 > [!WARNING]
 > A bug in the `get_orch_income.py` script's compounding rewards calculation may slightly understate actual rewards. In some cases, especially with daily reward transfers, it can even result in negative recomputed compounding rewards.
+
 > [!IMPORTANT]
 > The `get_delegator_income.py` script has not been fully validated yet. Currently, it retrieves `pendingRewards` and fees at the end of the round, rather than at the exact moment they become available.
 
